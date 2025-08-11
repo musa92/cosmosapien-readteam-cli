@@ -1,0 +1,2796 @@
+"""Main CLI application for Cosmosapien."""
+
+import asyncio
+from typing import List, Optional
+
+import typer
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+from rich.live import Live
+
+from ..auth.manager import AuthManager
+from ..core.agent_system import AgentRole, AgentSystem
+from ..core.config import ConfigManager
+from ..core.local_manager import LocalModelManager
+from ..core.model_library import ModelLibrary, ModelTier, ModelType
+from ..core.models import ChatMessage, model_registry
+from ..core.provider_info import (
+    get_all_providers,
+    get_provider_display_name,
+    get_provider_info,
+)
+from ..core.router import Router
+from ..core.smart_router import SmartRouter
+from ..models import Claude, Gemini, Grok, HuggingFace, LLaMA, OpenAI, Perplexity
+
+# Initialize Typer app
+app = typer.Typer(
+    name="cosmo",
+    help="Cosmosapien CLI - A modular command-line tool for multiple LLM providers",
+    add_completion=False,
+)
+
+# Initialize Rich console
+console = Console()
+
+# Global instances
+config_manager = ConfigManager()
+auth_manager = AuthManager(config_manager)
+router = Router(config_manager)
+local_manager = LocalModelManager()
+agent_system = AgentSystem(router, local_manager)
+smart_router = SmartRouter(config_manager, local_manager)
+model_library = ModelLibrary(config_manager)
+
+# Register models
+model_registry.register("openai", OpenAI)
+model_registry.register("gemini", Gemini)
+model_registry.register("claude", Claude)
+model_registry.register("perplexity", Perplexity)
+model_registry.register("llama", LLaMA)
+model_registry.register("grok", Grok)
+model_registry.register("huggingface", HuggingFace)
+
+
+def print_error(message: str):
+    """Print an error message."""
+    console.print("[red]Error: {message}[/red]")
+
+
+def print_success(message: str):
+    """Print a success message."""
+    console.print("[green]✓ {message}[/green]")
+
+
+def get_default_open_source_provider() -> tuple:
+    """Get the best available open-source provider and model."""
+    providers = auth_manager.list_providers()
+
+    # Priority order: huggingface (free tier), llama (local)
+    for provider_name in ["huggingface", "llama"]:
+        for provider in providers:
+            if provider["provider"] == provider_name:
+                if (
+                    provider["logged_in"] or provider_name == "llama"
+                ):  # llama doesn't need login
+                    default_models = {
+                        "llama": "dolphin-llama3:latest",  # More powerful than codellama
+                        "huggingface": "gpt2",
+                    }
+                    return provider_name, default_models.get(provider_name, "default")
+
+    # Fallback to llama (local)
+    return "llama", "codellama:latest"
+
+
+@app.command()
+def setup():
+    """Set up local environment and install dependencies."""
+
+    async def _setup():
+        console.print(
+            "[bold blue]Setting up Cosmosapien CLI environment...[/bold blue]\n"
+        )
+
+        # Check local environment
+        status = await local_manager.setup_local_environment()
+
+        table = Table(title="Local Environment Status")
+        table.add_column("Runner", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Action", style="yellow")
+
+        for runner, is_available in status.items():
+            status_icon = "✓" if is_available else "✗"
+            action = "Ready" if is_available else "Install"
+            table.add_row(runner.title(), status_icon, action)
+
+        console.print(table)
+
+        # Show installation help for missing runners
+        for runner, is_available in status.items():
+            if not is_available:
+                console.print(
+                    "\n[bold yellow]Installation help for {runner}:[/bold yellow]"
+                )
+                help_text = local_manager.get_installation_help(runner)
+                console.print(Panel(help_text, border_style="yellow"))
+
+        # Show recommended models
+        console.print("\n[bold blue]Recommended Models:[/bold blue]")
+        recommended = local_manager.get_recommended_models()
+        for model in recommended[:5]:  # Show top 5
+            console.print("• [cyan]{model['name']}[/cyan] - {model['description']}")
+            console.print(
+                "  Size: {model['size']} | Performance: {model['performance']}"
+            )
+
+        console.print(
+            "\n[green]Setup complete! Run 'cosmo agents' to see available AI agents.[/green]"
+        )
+
+    asyncio.run(_setup())
+
+
+@app.command()
+def agents():
+    """Show available AI agents and their capabilities."""
+
+    async def _agents():
+        # Create default agents
+        await agent_system.create_default_agents()
+
+        agents = agent_system.get_available_agents()
+
+        if not agents:
+            console.print(
+                "[yellow]No agents available. Run 'cosmo setup' to configure local models.[/yellow]"
+            )
+            return
+
+        # Separate local and cloud agents
+        local_agents = [a for a in agents if a.provider == "llama"]
+        cloud_agents = [a for a in agents if a.provider != "llama"]
+
+        # Show local agents
+        if local_agents:
+            console.print(
+                "[bold blue]🏠 Local Agents (No API Key Required)[/bold blue]"
+            )
+            local_table = Table(title="Local AI Agents")
+            local_table.add_column("Agent", style="cyan", no_wrap=True)
+            local_table.add_column("Role", style="magenta")
+            local_table.add_column("Model", style="blue")
+            local_table.add_column("Capabilities", style="green")
+
+            for agent in local_agents:
+                capabilities = ", ".join(agent.capabilities[:3])
+                if len(agent.capabilities) > 3:
+                    capabilities += "..."
+
+                local_table.add_row(
+                    agent.name, agent.role.value.title(), agent.model, capabilities
+                )
+
+            console.print(local_table)
+            console.print()
+
+        # Show cloud agents
+        if cloud_agents:
+            console.print("[bold blue]☁️ Cloud Agents (API Key Required)[/bold blue]")
+            cloud_table = Table(title="Cloud AI Agents")
+            cloud_table.add_column("Agent", style="cyan", no_wrap=True)
+            cloud_table.add_column("Role", style="magenta")
+            cloud_table.add_column("Provider", style="blue")
+            cloud_table.add_column("Model", style="yellow")
+            cloud_table.add_column("Capabilities", style="green")
+
+            for agent in cloud_agents:
+                capabilities = ", ".join(agent.capabilities[:3])
+                if len(agent.capabilities) > 3:
+                    capabilities += "..."
+
+                cloud_table.add_row(
+                    agent.name,
+                    agent.role.value.title(),
+                    agent.provider.title(),
+                    agent.model,
+                    capabilities,
+                )
+
+            console.print(cloud_table)
+            console.print()
+
+        # Show total count
+        len(agents)
+        len(local_agents)
+        cloud_count = len(cloud_agents)
+
+        console.print(
+            "[bold]Total Agents: {total_agents}[/bold] ([green]Local: {local_count}[/green], [blue]Cloud: {cloud_count}[/blue])"
+        )
+
+        # Show login status for cloud providers
+        if cloud_count == 0:
+            console.print(
+                "\n[bold yellow]💡 To add cloud agents, login to providers:[/bold yellow]"
+            )
+            console.print(
+                "• [cyan]cosmo login openai[/cyan] - Add GPT-4, GPT-4-Turbo agents"
+            )
+            console.print(
+                "• [cyan]cosmo login gemini[/cyan] - Add Gemini-Pro, Gemini-Flash agents"
+            )
+            console.print(
+                "• [cyan]cosmo login claude[/cyan] - Add Claude-3-Sonnet, Claude-3-Haiku agents"
+            )
+            console.print("• [cyan]cosmo login grok[/cyan] - Add Grok agent")
+            console.print(
+                "• [cyan]cosmo login perplexity[/cyan] - Add Perplexity agents"
+            )
+            console.print(
+                "• [cyan]cosmo login huggingface[/cyan] - Add HuggingFace agents"
+            )
+
+        console.print("\n[bold]Use these commands to interact with agents:[/bold]")
+        console.print(
+            "• [cyan]cosmo collaborate <message>[/cyan] - Get responses from multiple agents"
+        )
+        console.print(
+            "• [cyan]cosmo debate <topic>[/cyan] - Run a debate between agents"
+        )
+        console.print(
+            "• [cyan]cosmo solve <problem>[/cyan] - Use agents to solve complex problems"
+        )
+        console.print(
+            "• [cyan]cosmo hybrid <message>[/cyan] - Mix local and cloud agents"
+        )
+
+    asyncio.run(_agents())
+
+
+@app.command()
+def collaborate(
+    message: str = typer.Argument(..., help="Your message to the agents"),
+    roles: List[str] = typer.Option(
+        None,
+        "--roles",
+        "-r",
+        help="Agent roles to use (generalist, coder, creative, etc.)",
+    ),
+):
+    """Get collaborative responses from multiple AI agents."""
+
+    async def _collaborate():
+        # Create default agents
+        await agent_system.create_default_agents()
+
+        # Convert role strings to AgentRole enums
+        agent_roles = None
+        if roles:
+            agent_roles = []
+            for role_str in roles:
+                try:
+                    agent_roles.append(AgentRole(role_str.lower()))
+                except ValueError:
+                    console.print("[yellow]Unknown role: {role_str}[/yellow]")
+
+        try:
+            result = await agent_system.collaborative_chat(message, agent_roles)
+
+            console.print("\n[bold blue]Collaborative Response[/bold blue]")
+            console.print("[dim]Message: {message}[/dim]\n")
+
+            # Show individual agent responses
+            for agent_name, response in result["agents"].items():
+                if response.get("error"):
+                    console.print(
+                        Panel(
+                            "[red]Error: {response['content']}[/red]",
+                            title="❌ {agent_name} ({response['role']})",
+                            border_style="red",
+                        )
+                    )
+                else:
+                    console.print(
+                        Panel(
+                            response["content"],
+                            title=f"🤖 {agent_name} ({response['role']})",
+                            border_style="blue",
+                        )
+                    )
+                console.print()
+
+            # Show summary
+            if result["summary"]:
+                console.print(
+                    Panel(result["summary"], title="📋 Summary", border_style="green")
+                )
+
+            # Show recommendations
+            if result["recommendations"]:
+                console.print("\n[bold]Recommendations:[/bold]")
+                for rec in result["recommendations"]:
+                    console.print("• {rec}")
+
+        except Exception:
+            console.print("[red]Error: {str(e)}[/red]")
+
+    asyncio.run(_collaborate())
+
+
+@app.command()
+def solve(
+    problem: str = typer.Argument(..., help="Complex problem to solve"),
+):
+    """Use multiple agents to solve a complex problem."""
+
+    async def _solve():
+        # Create default agents
+        await agent_system.create_default_agents()
+
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task(
+                    "Solving problem with AI agents...", total=None
+                )
+
+                result = await agent_system.solve_complex_problem(problem)
+
+            console.print("\n[bold blue]Problem Solution[/bold blue]")
+            console.print("[dim]Problem: {problem}[/dim]\n")
+
+            # Show component solutions
+            for component, solutions in result["solutions"].items():
+                console.print("[bold]{component.title()}:[/bold]")
+                for solution in solutions:
+                    if solution.get("error"):
+                        console.print(
+                            "  ❌ {solution['agent']}: {solution['solution']}"
+                        )
+                    else:
+                        console.print(
+                            "  ✅ {solution['agent']}: {solution['solution'][:100]}..."
+                        )
+                console.print()
+
+            # Show final solution
+            if result["final_solution"]:
+                console.print(
+                    Panel(
+                        result["final_solution"],
+                        title="🎯 Final Solution",
+                        border_style="green",
+                    )
+                )
+
+        except Exception:
+            console.print("[red]Error: {str(e)}[/red]")
+
+    asyncio.run(_solve())
+
+
+@app.command()
+def hybrid(
+    message: str = typer.Argument(..., help="Your message to the hybrid agent team"),
+    local_agents: int = typer.Option(
+        1, "--local", "-l", help="Number of local agents to use"
+    ),
+    cloud_agents: int = typer.Option(
+        1, "--cloud", "-c", help="Number of cloud agents to use"
+    ),
+):
+    """Get responses from a mix of local and cloud agents."""
+
+    async def _hybrid():
+        # Create default agents
+        await agent_system.create_default_agents()
+
+        agents = agent_system.get_available_agents()
+
+        if not agents:
+            console.print(
+                "[yellow]No agents available. Run 'cosmo setup' to configure local models.[/yellow]"
+            )
+            return
+
+        # Separate local and cloud agents
+        local_agent_list = [a for a in agents if a.provider == "llama"]
+        cloud_agent_list = [a for a in agents if a.provider != "llama"]
+
+        # Select agents
+        selected_agents = []
+
+        # Add local agents
+        if local_agent_list:
+            selected_local = local_agent_list[
+                : min(local_agents, len(local_agent_list))
+            ]
+            selected_agents.extend(selected_local)
+            console.print(
+                "[green]Selected {len(selected_local)} local agent(s): {', '.join([a.name for a in selected_local])}[/green]"
+            )
+
+        # Add cloud agents
+        if cloud_agent_list:
+            selected_cloud = cloud_agent_list[
+                : min(cloud_agents, len(cloud_agent_list))
+            ]
+            selected_agents.extend(selected_cloud)
+            console.print(
+                "[blue]Selected {len(selected_cloud)} cloud agent(s): {', '.join([a.name for a in selected_cloud])}[/blue]"
+            )
+
+        if not selected_agents:
+            console.print(
+                "[red]No agents selected. Check your login status for cloud providers.[/red]"
+            )
+            return
+
+        try:
+            console.print("\n[bold blue]🤖 Hybrid Agent Response[/bold blue]")
+            console.print("[dim]Message: {message}[/dim]")
+            console.print(
+                "[dim]Agents: {len(selected_agents)} total ({len([a for a in selected_agents if a.provider == 'llama'])} local, {len([a for a in selected_agents if a.provider != 'llama'])} cloud)[/dim]\n"
+            )
+
+            # Get responses from each agent
+            responses = {}
+            for agent in selected_agents:
+                try:
+                    # Create a simple conversation for this agent
+                    messages = [ChatMessage(role="user", content=message)]
+
+                    response = await agent_system.router.chat(
+                        messages=messages, provider=agent.provider, model=agent.model
+                    )
+
+                    responses[agent.name] = {
+                        "content": response.content,
+                        "role": agent.role.value,
+                        "provider": agent.provider,
+                        "model": agent.model,
+                        "type": "local" if agent.provider == "llama" else "cloud",
+                    }
+
+                except Exception:
+                    responses[agent.name] = {
+                        "content": "Error: {str(e)}",
+                        "role": agent.role.value,
+                        "provider": agent.provider,
+                        "model": agent.model,
+                        "type": "local" if agent.provider == "llama" else "cloud",
+                        "error": True,
+                    }
+
+            # Show responses grouped by type
+            if any(r["type"] == "local" for r in responses.values()):
+                console.print("[bold green]🏠 Local Agents:[/bold green]")
+                for agent_name, response in responses.items():
+                    if response["type"] == "local":
+                        if response.get("error"):
+                            console.print(
+                                Panel(
+                                    "[red]Error: {response['content']}[/red]",
+                                    title="❌ {agent_name} ({response['role']})",
+                                    border_style="red",
+                                )
+                            )
+                        else:
+                            console.print(
+                                Panel(
+                                    response["content"],
+                                    title=f"🤖 {agent_name} ({response['role']})",
+                                    border_style="green",
+                                )
+                            )
+                console.print()
+
+            if any(r["type"] == "cloud" for r in responses.values()):
+                console.print("[bold blue]☁️ Cloud Agents:[/bold blue]")
+                for agent_name, response in responses.items():
+                    if response["type"] == "cloud":
+                        if response.get("error"):
+                            console.print(
+                                Panel(
+                                    "[red]Error: {response['content']}[/red]",
+                                    title="❌ {agent_name} ({response['role']})",
+                                    border_style="red",
+                                )
+                            )
+                        else:
+                            console.print(
+                                Panel(
+                                    response["content"],
+                                    title=f"☁️ {agent_name} ({response['role']})",
+                                    border_style="blue",
+                                )
+                            )
+                console.print()
+
+            # Show comparison
+            if len(responses) > 1:
+                console.print("[bold yellow]📊 Agent Comparison:[/bold yellow]")
+                for agent_name, response in responses.items():
+                    if not response.get("error"):
+                        console.print(
+                            "• [cyan]{agent_name}[/cyan] ({response['type']}): {response['content'][:100]}..."
+                        )
+                    else:
+                        console.print(
+                            "• [red]{agent_name}[/red] ({response['type']}): Error"
+                        )
+
+        except Exception:
+            console.print("[red]Error: {str(e)}[/red]")
+
+    asyncio.run(_hybrid())
+
+
+@app.command()
+def version():
+    """Show version information."""
+
+    console.print("[bold blue]Cosmosapien CLI v{__version__}[/bold blue]")
+
+
+@app.command()
+def login(
+    provider: str = typer.Argument(
+        ..., help="Provider name ({', '.join(get_all_providers())})"
+    ),
+    api_key: Optional[str] = typer.Option(
+        None, "--key", "-k", help="API key (will prompt if not provided)"
+    ),
+):
+    """Login to a provider by storing API key securely."""
+    if provider not in get_all_providers():
+        print_error("Unknown provider: {provider}")
+        print_error("Available providers: {', '.join(get_all_providers())}")
+        raise typer.Exit(1)
+    
+    if auth_manager.login(provider, api_key):
+        print_success("Logged in to {provider}")
+    else:
+        print_error("Failed to login to {provider}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def logout(provider: str = typer.Argument(..., help="Provider name to logout from")):
+    """Logout from a provider by removing API key."""
+    if auth_manager.logout(provider):
+        print_success("Logged out from {provider}")
+    else:
+        print_error("Failed to logout from {provider}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def status():
+    """Show login status for all providers."""
+    providers = auth_manager.list_providers()
+    
+    table = Table(title="Provider Status")
+    table.add_column("Provider", style="cyan", no_wrap=True)
+    table.add_column("Tier", style="magenta", no_wrap=True)
+    table.add_column("Status", style="green")
+    table.add_column("Logged In", style="yellow")
+    
+    for provider in providers:
+        provider_name = provider["provider"]
+        status_icon = "✓" if provider["logged_in"] else "✗"
+        provider_info = get_provider_info(provider_name)
+
+        # Get tier information
+        if provider_info:
+            if provider_info.tier_type == "bundled":
+                pass
+            elif provider_info.tier_type == "local":
+                pass
+            elif provider_info.tier_type == "individual":
+                pass
+
+        table.add_row(
+            get_provider_display_name(provider_name),
+            "[{tier_style}]{tier_text}[/{tier_style}]",
+            status_icon,
+            "Yes" if provider["logged_in"] else "No",
+        )
+    
+    console.print(table)
+
+    # Add tier explanation
+    console.print("\n[bold]Tier Types:[/bold]")
+    console.print("• [blue]Individual[/blue] - Pay per model/usage")
+    console.print("* [yellow]Bundled[/yellow] - Multiple models with subscription")
+    console.print("○ [green]Local[/green] - Run locally, no API key needed")
+
+
+@app.command()
+def providers():
+    """Show detailed information about all providers."""
+    console.print("[bold blue]Provider Information[/bold blue]\n")
+
+    for provider_name in get_all_providers():
+        info = get_provider_info(provider_name)
+        if not info:
+            continue
+
+        # Create provider card
+        console.print(
+            Panel(
+                "[bold]{info.display_name}[/bold]\n"
+                "[dim]{info.description}[/dim]\n\n"
+                "🌐 [link={info.website}]Website[/link]\n"
+                "📚 [link={info.api_docs}]API Docs[/link]\n"
+                "💳 Subscription: {'Required' if info.subscription_required else 'Not Required'}\n"
+                "🆓 Free Tier: {'Available' if info.free_tier_available else 'Not Available'}\n"
+                "📦 Tier Type: {info.tier_type.title()} {info.tier_icon}",
+                title=f"{info.tier_icon} {info.display_name}",
+                border_style=(
+                    "blue"
+                    if info.tier_type == "individual"
+                    else "yellow" if info.tier_type == "bundled" else "green"
+                ),
+            )
+        )
+        console.print("\n")
+
+
+@app.command()
+def cosmic():
+    """Launch the clean cosmic-themed interactive interface."""
+    from .cosmic_ui import CosmicUI
+
+    async def _cosmic():
+        cosmic_ui = CosmicUI()
+        await cosmic_ui.clean_chat()
+
+    asyncio.run(_cosmic())
+
+
+@app.command()
+def ask(
+    prompt: str = typer.Argument(..., help="Your question or prompt"),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Provider to use"
+    ),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use"),
+    max_tokens: Optional[int] = typer.Option(
+        None, "--max-tokens", help="Maximum tokens to generate"
+    ),
+    temperature: Optional[float] = typer.Option(
+        None, "--temperature", "-t", help="Temperature for generation"
+    ),
+    stream: bool = typer.Option(False, "--stream", "-s", help="Stream the response"),
+    smart_route: bool = typer.Option(
+        False,
+        "--smart-route",
+        "--squeeze",
+        help="Use smart routing for cost efficiency",
+    ),
+    explain_route: bool = typer.Option(
+        False, "--explain-route", help="Show routing decision without making the call"
+    ),
+):
+    """Ask a question to any supported LLM provider."""
+    
+    async def _ask():
+        try:
+            # Use smart routing if requested
+            if smart_route or explain_route:
+                decision = smart_router.smart_route(prompt, explain_only=explain_route)
+
+                # Show routing decision
+                console.print("\n[bold blue]🧠 Smart Routing Decision[/bold blue]")
+                console.print(
+                    "[dim]Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}[/dim]"
+                )
+                console.print(
+                    "[bold]Complexity:[/bold] {decision.complexity.value.title()}"
+                )
+                console.print(
+                    "[bold]Selected:[/bold] {decision.selected_provider}/{decision.selected_model}"
+                )
+                console.print("[bold]Reasoning:[/bold] {decision.reasoning}")
+                console.print(
+                    "[bold]Estimated Cost:[/bold] ${decision.estimated_cost:.4f}"
+                )
+
+                if decision.alternatives:
+                    console.print("\n[bold]Alternatives:[/bold]")
+                    for alt_provider, alt_model, alt_reason in decision.alternatives[
+                        :3
+                    ]:
+                        console.print("• {alt_provider}/{alt_model} - {alt_reason}")
+
+                if explain_route:
+                    console.print(
+                        "\n[green]Routing explanation complete. Use --smart-route to execute.[/green]"
+                    )
+                    return
+
+                if decision.selected_provider == "none":
+                    console.print(
+                        "[red]No suitable provider found. Please login to providers or check local models.[/red]"
+                    )
+                    return
+
+                # Use the selected provider and model
+                selected_provider = decision.selected_provider
+                selected_model = decision.selected_model
+            else:
+                # Use provided provider/model or defaults
+                selected_provider = provider or get_default_open_source_provider()[0]
+                selected_model = model or get_default_open_source_provider()[1]
+
+            # Generate response
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                task = progress.add_task("Generating response...", total=None)
+                
+                response = await router.generate(
+                    prompt=prompt,
+                    provider=selected_provider,
+                    model=selected_model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            
+            # Display the response
+            console.print("\n")
+            console.print(
+                Panel(
+                Markdown(response.content),
+                    title=f"[bold]{get_provider_display_name(response.provider)} ({response.model})[/bold]",
+                    border_style="blue",
+                )
+            )
+
+            # Show usage info if smart routing was used
+            if smart_route:
+                usage = smart_router.get_usage_summary()
+                if usage["total_calls"] > 0:
+                    console.print(
+                        "\n[dim]Usage: {usage['total_calls']} total calls, ${usage['estimated_cost']:.4f} estimated cost[/dim]"
+                    )
+            elif response.usage:
+                usage_table = Table(title="Usage Information")
+                usage_table.add_column("Metric", style="cyan")
+                usage_table.add_column("Value", style="green")
+                
+                for key, value in response.usage.items():
+                    usage_table.add_row(key.replace("_", " ").title(), str(value))
+                
+                console.print(usage_table)
+                
+        except Exception as e:
+            print_error(str(e))
+            if smart_route:
+                console.print(
+                    "[yellow]Smart routing failed. Try using a specific provider with --provider.[/yellow]"
+                )
+            raise typer.Exit(1)
+    
+    asyncio.run(_ask())
+
+
+@app.command()
+def chat(
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Provider to use (defaults to open-source)"
+    ),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model to use"),
+    system_prompt: Optional[str] = typer.Option(
+        None, "--system", "-s", help="System prompt"
+    ),
+):
+    """Start an interactive chat session."""
+    
+    async def _chat():
+        try:
+            messages = []
+            
+            # Use open-source defaults if no provider specified
+            chat_provider = provider
+            chat_model = model
+
+            if not chat_provider:
+                chat_provider, chat_model = get_default_open_source_provider()
+                console.print(
+                    "[cyan]Using open-source model: {chat_provider} ({chat_model})[/cyan]\n"
+                )
+
+            # Add system message if provided
+            if system_prompt:
+                messages.append(ChatMessage(role="system", content=system_prompt))
+            
+            console.print(
+                "[bold blue]Chat session started. Type 'quit' to exit.[/bold blue]\n"
+            )
+            
+            while True:
+                # Get user input
+                user_input = Prompt.ask("[bold green]You[/bold green]")
+                
+                if user_input.lower() in ["quit", "exit", "q"]:
+                    console.print("[yellow]Goodbye![/yellow]")
+                    break
+                
+                if not user_input.strip():
+                    continue
+                
+                # Add user message
+                messages.append(ChatMessage(role="user", content=user_input))
+                
+                try:
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[progress.description]{task.description}"),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task = progress.add_task("Thinking...", total=None)
+                        
+                        response = await router.chat(
+                            messages=messages,
+                            provider=chat_provider,
+                            model=chat_model,
+                        )
+                    
+                    # Add assistant response
+                    messages.append(
+                        ChatMessage(role="assistant", content=response.content)
+                    )
+                    
+                    # Display response
+                    console.print(
+                        "\n[bold blue]{response.provider.title()}[/bold blue]: {response.content}\n"
+                    )
+                    
+                except Exception as e:
+                    print_error(str(e))
+                    # Remove the last user message if there was an error
+                    if messages and messages[-1].role == "user":
+                        messages.pop()
+                
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Chat session interrupted.[/yellow]")
+        except Exception as e:
+            print_error(str(e))
+            raise typer.Exit(1)
+    
+    asyncio.run(_chat())
+
+
+@app.command()
+def debate(
+    prompt: str = typer.Argument(..., help="Debate topic or question"),
+    models: List[str] = typer.Option(
+        ["openai:gpt-4", "claude:claude-3-sonnet-20240229"],
+        "--models",
+        "-m",
+        help="Models to participate in debate (format: provider:model)",
+    ),
+    rounds: int = typer.Option(3, "--rounds", "-r", help="Number of debate rounds"),
+):
+    """Run a debate between multiple AI models."""
+    
+    async def _debate():
+        try:
+            # Parse model configurations
+            model_configs = []
+            for model_str in models:
+                if ":" in model_str:
+                    provider, model = model_str.split(":", 1)
+                    model_configs.append({"provider": provider, "model": model})
+                else:
+                    print_error(
+                        "Invalid model format: {model_str}. Use provider:model format."
+                    )
+                    raise typer.Exit(1)
+            
+            if len(model_configs) < 2:
+                print_error("At least 2 models are required for a debate.")
+                raise typer.Exit(1)
+            
+            console.print(
+                "[bold blue]Starting debate with {len(model_configs)} models for {rounds} rounds[/bold blue]\n"
+            )
+            console.print(Panel("[bold]Topic:[/bold] {prompt}", border_style="blue"))
+            console.print("\n")
+            
+            responses = await router.debate(
+                prompt=prompt,
+                models=model_configs,
+                rounds=rounds,
+            )
+            
+            # Display debate results
+            for i, response in enumerate(responses):
+                round_num = (i // len(model_configs)) + 1
+                
+                console.print(
+                    Panel(
+                    Markdown(response.content),
+                        title="[bold]Round {round_num} - {model_name}[/bold]",
+                        border_style="green" if round_num % 2 == 1 else "yellow",
+                    )
+                )
+                console.print("\n")
+                
+        except Exception as e:
+            print_error(str(e))
+            raise typer.Exit(1)
+    
+    asyncio.run(_debate())
+
+
+@app.command()
+def list_models(
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Show models for specific provider"
+    ),
+    use_library: bool = typer.Option(
+        True, "--library", help="Use model library instead of provider API"
+    ),
+):
+    """List available models."""
+    if use_library:
+        # Use model library
+        models = router.list_library_models(provider=provider, active_only=True)
+
+        if not models:
+            console.print("[yellow]No models found in the library.[/yellow]")
+            return
+
+        table = Table(title="Model Library")
+        table.add_column("Provider", style="cyan")
+        table.add_column("Model ID", style="blue")
+        table.add_column("Display Name", style="green")
+        table.add_column("Tier", style="yellow")
+        table.add_column("Type", style="magenta")
+
+        for model in models:
+            table.add_row(
+                model.provider.title(),
+                model.model_id,
+                model.display_name,
+                model.tier.value.title(),
+                model.model_type.value.title(),
+            )
+
+        console.print(table)
+    else:
+        # Use provider API (legacy method)
+        if provider:
+            if provider not in model_registry.list_models():
+                print_error(f"Unknown provider: {provider}")
+                raise typer.Exit(1)
+            try:
+                # Create a dummy instance to get available models
+                model_class = model_registry.get(provider)
+                if model_class:
+                    dummy_instance = model_class("dummy")
+                    models = dummy_instance.get_available_models()
+                    table = Table(title=f"Available Models for {provider.title()}")
+                    table.add_column("Model", style="cyan")
+                    for model in models:
+                        table.add_row(model)
+                    console.print(table)
+                else:
+                    print_error(f"Provider {provider} not found")
+                    raise typer.Exit(1)
+            except Exception as e:
+                print_error(f"Error listing models for {provider}: {str(e)}")
+                raise typer.Exit(1)
+        else:
+            # List all providers
+            table = Table(title="Available Providers")
+            table.add_column("Provider", style="cyan")
+            table.add_column("Status", style="green")
+            for provider in model_registry.list_models():
+                status = "✓" if auth_manager.is_logged_in(provider) else "✗"
+                table.add_row(provider.title(), status)
+            console.print(table)
+
+
+@app.command()
+def usage():
+    """Show usage statistics and cost tracking."""
+    usage_summary = smart_router.get_usage_summary()
+
+    console.print("[bold blue]Usage Statistics[/bold blue]\n")
+
+    if not usage_summary["providers"]:
+        console.print(
+            "[yellow]No usage data available. Start using smart routing with --smart-route flag.[/yellow]"
+        )
+        return
+
+    # Show summary
+    console.print("[bold]Total Calls:[/bold] {usage_summary['total_calls']}")
+    console.print("[bold]Estimated Cost:[/bold] ${usage_summary['estimated_cost']:.4f}")
+    console.print()
+
+    # Show provider details
+    table = Table(title="Provider Usage")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Model", style="blue")
+    table.add_column("Used Calls", style="green")
+    table.add_column("Remaining", style="yellow")
+    table.add_column("Cost", style="red")
+    table.add_column("Type", style="magenta")
+
+    for key, data in usage_summary["providers"].items():
+        remaining = "∞" if data["is_local"] else str(data["remaining_calls"])
+        cost = "$0.00" if data["is_local"] else "${data['cost']:.4f}"
+        provider_type = "Local" if data["is_local"] else "Cloud"
+
+        table.add_row(
+            data["provider"].title(),
+            data["model"],
+            str(data["used_calls"]),
+            remaining,
+            cost,
+            provider_type,
+        )
+
+    console.print(table)
+
+    # Show recommendations
+    console.print("\n[bold]💡 Recommendations:[/bold]")
+    if usage_summary["estimated_cost"] > 0.01:
+        console.print("• Consider using local models for simple tasks to reduce costs")
+        console.print("• Use --smart-route flag for automatic cost optimization")
+
+    local_usage = sum(
+        1 for data in usage_summary["providers"].values() if data["is_local"]
+    )
+    if local_usage == 0:
+        console.print("• Try local models with Ollama for free, unlimited usage")
+
+
+@app.command()
+def reset_usage(
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Reset usage for specific provider only"
+    )
+):
+    """Reset usage statistics."""
+    if provider:
+        smart_router.reset_usage(provider)
+        console.print("[green]Reset usage for {provider}[/green]")
+    else:
+        smart_router.reset_usage()
+        console.print("[green]Reset all usage statistics[/green]")
+
+
+@app.command()
+def smart_route(
+    prompt: str = typer.Argument(..., help="Your question or prompt"),
+    explain_only: bool = typer.Option(
+        False, "--explain", "-e", help="Show routing decision without executing"
+    ),
+):
+    """Smart route a prompt to the most cost-efficient model."""
+    decision = smart_router.smart_route(prompt, explain_only=explain_only)
+
+    console.print("\n[bold blue]🧠 Smart Routing Decision[/bold blue]")
+    console.print(
+        "[dim]Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}[/dim]"
+    )
+    console.print("[bold]Complexity:[/bold] {decision.complexity.value.title()}")
+    console.print(
+        "[bold]Selected:[/bold] {decision.selected_provider}/{decision.selected_model}"
+    )
+    console.print("[bold]Reasoning:[/bold] {decision.reasoning}")
+    console.print("[bold]Estimated Cost:[/bold] ${decision.estimated_cost:.4f}")
+
+    if decision.alternatives:
+        console.print("\n[bold]Alternatives:[/bold]")
+        for alt_provider, alt_model, alt_reason in decision.alternatives[:3]:
+            console.print("• {alt_provider}/{alt_model} - {alt_reason}")
+
+    if explain_only:
+        console.print(
+            "\n[green]Routing explanation complete. Use 'cosmo ask --smart-route' to execute.[/green]"
+        )
+    elif decision.selected_provider == "none":
+        console.print(
+            "\n[red]No suitable provider found. Please login to providers or check local models.[/red]"
+        )
+    else:
+        console.print(
+            "\n[green]Use 'cosmo ask --smart-route \"{prompt}\"' to execute this routing decision.[/green]"
+        )
+
+
+@app.command()
+def configure_smart_routing(
+    provider: str = typer.Argument(..., help="Provider name"),
+    model: str = typer.Argument(..., help="Model name"),
+    free_tier_limit: Optional[int] = typer.Option(
+        None, "--limit", "-l", help="Free tier call limit"
+    ),
+    cost_per_call: Optional[float] = typer.Option(
+        None, "--cost", "-c", help="Cost per call in USD"
+    ),
+):
+    """Configure smart routing settings for a specific provider/model."""
+    try:
+        if free_tier_limit is not None:
+            config_manager.set_free_tier_limit(provider, model, free_tier_limit)
+            console.print(
+                "[green]Set free tier limit for {provider}/{model}: {free_tier_limit} calls[/green]"
+            )
+
+        if cost_per_call is not None:
+            config_manager.set_custom_cost(provider, model, cost_per_call)
+            console.print(
+                "[green]Set cost for {provider}/{model}: ${cost_per_call:.4f} per call[/green]"
+            )
+
+        if free_tier_limit is None and cost_per_call is None:
+            console.print(
+                "[yellow]Please specify --limit or --cost to configure smart routing.[/yellow]"
+            )
+
+    except Exception:
+        console.print("[red]Error configuring smart routing: {str(e)}[/red]")
+
+
+@app.command()
+def models(
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="Filter by provider"
+    ),
+    tier: Optional[str] = typer.Option(
+        None, "--tier", "-t", help="Filter by tier (free, basic, standard, premium)"
+    ),
+    type: Optional[str] = typer.Option(
+        None, "--type", help="Filter by model type (chat, completion, embedding)"
+    ),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
+    active_only: bool = typer.Option(
+        True, "--all", help="Show all models including inactive"
+    ),
+    format: str = typer.Option(
+        "table", "--format", "-", help="Output format (table, json, csv)"
+    ),
+):
+    """List and manage models in the model library."""
+    try:
+        # Parse filters
+        tier_enum = None
+        if tier:
+            try:
+                tier_enum = ModelTier(tier.lower())
+            except ValueError:
+                console.print(
+                    "[red]Invalid tier: {tier}. Valid options: free, basic, standard, premium, enterprise[/red]"
+                )
+                return
+
+        type_enum = None
+        if type:
+            try:
+                type_enum = ModelType(type.lower())
+            except ValueError:
+                console.print(
+                    "[red]Invalid type: {type}. Valid options: chat, completion, embedding, vision, audio, multimodal[/red]"
+                )
+                return
+
+        # Get filtered models
+        models = model_library.list_models(
+            provider=provider,
+            tier=tier_enum,
+            model_type=type_enum,
+            active_only=active_only,
+        )
+
+        if tag:
+            models = [m for m in models if tag in m.tags]
+
+        if not models:
+            console.print(
+                "[yellow]No models found matching the specified criteria.[/yellow]"
+            )
+            return
+
+        # Display based on format
+        if format == "json":
+            import json
+
+            data = [model.to_dict() for model in models]
+            console.print(json.dumps(data, indent=2))
+        elif format == "csv":
+            import csv
+            import io
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(
+                [
+                    "Provider",
+                    "Model ID",
+                    "Display Name",
+                    "Tier",
+                    "Type",
+                    "Tags",
+                    "Active",
+                ]
+            )
+            for model in models:
+                writer.writerow(
+                    [
+                        model.provider,
+                        model.model_id,
+                        model.display_name,
+                        model.tier.value,
+                        model.model_type.value,
+                        ", ".join(model.tags),
+                        model.is_active,
+                    ]
+                )
+            console.print(output.getvalue())
+        else:  # table format
+            table = Table(title="Model Library")
+            table.add_column("Provider", style="cyan")
+            table.add_column("Model ID", style="blue")
+            table.add_column("Display Name", style="green")
+            table.add_column("Tier", style="yellow")
+            table.add_column("Type", style="magenta")
+            table.add_column("Tags", style="white")
+            table.add_column("Active", style="red")
+
+            for model in models:
+                table.add_row(
+                    model.provider.title(),
+                    model.model_id,
+                    model.display_name,
+                    model.tier.value.title(),
+                    model.model_type.value.title(),
+                    ", ".join(model.tags[:3]) + ("..." if len(model.tags) > 3 else ""),
+                    "Yes" if model.is_active else "No",
+                )
+
+            console.print(table)
+
+    except Exception:
+        console.print("[red]Error listing models: {str(e)}[/red]")
+
+
+@app.command()
+def model_info(
+    model_id: str = typer.Argument(..., help="Model ID (format: provider:model_id)"),
+):
+    """Show detailed information about a specific model."""
+    try:
+        model = model_library.get_model(model_id)
+        if not model:
+            console.print("[red]Model not found: {model_id}[/red]")
+            return
+
+        # Display model information
+        console.print(
+            Panel(
+                "[bold]Provider:[/bold] {model.provider.title()}\n"
+                "[bold]Model ID:[/bold] {model.model_id}\n"
+                "[bold]Display Name:[/bold] {model.display_name}\n"
+                "[bold]Description:[/bold] {model.description}\n"
+                "[bold]Type:[/bold] {model.model_type.value.title()}\n"
+                "[bold]Tier:[/bold] {model.tier.value.title()}\n"
+                "[bold]Active:[/bold] {'Yes' if model.is_active else 'No'}\n"
+                "[bold]Local:[/bold] {'Yes' if model.is_local else 'No'}\n"
+                "[bold]Tags:[/bold] {', '.join(model.tags)}",
+                title="[bold]Model Information[/bold]",
+                border_style="blue",
+            )
+        )
+
+        # Capabilities
+        console.print(
+            Panel(
+                "[bold]Max Tokens:[/bold] {model.capabilities.max_tokens or 'Unlimited'}\n"
+                "[bold]Max Input Tokens:[/bold] {model.capabilities.max_input_tokens or 'Unlimited'}\n"
+                "[bold]Context Window:[/bold] {model.capabilities.context_window or 'Unknown'}\n"
+                "[bold]Training Data Cutoff:[/bold] {model.capabilities.training_data_cutoff or 'Unknown'}\n"
+                "[bold]Supports Streaming:[/bold] {'Yes' if model.capabilities.supports_streaming else 'No'}\n"
+                "[bold]Supports Function Calling:[/bold] {'Yes' if model.capabilities.supports_function_calling else 'No'}\n"
+                "[bold]Supports Vision:[/bold] {'Yes' if model.capabilities.supports_vision else 'No'}\n"
+                "[bold]Supports Audio:[/bold] {'Yes' if model.capabilities.supports_audio else 'No'}\n"
+                "[bold]Supports Embeddings:[/bold] {'Yes' if model.capabilities.supports_embeddings else 'No'}",
+                title="[bold]Capabilities[/bold]",
+                border_style="green",
+            ))
+
+        # Pricing
+        console.print(
+            Panel(
+                "[bold]Input Cost (per 1K tokens):[/bold] ${model.pricing.input_cost_per_1k_tokens:.4f}\n"
+                "[bold]Output Cost (per 1K tokens):[/bold] ${model.pricing.output_cost_per_1k_tokens:.4f}\n"
+                "[bold]Free Tier Limit:[/bold] {model.pricing.free_tier_limit if model.pricing.free_tier_limit != float('inf') else 'Unlimited'}\n"
+                "[bold]Free Tier Reset:[/bold] {model.pricing.free_tier_reset_period.title()}\n"
+                "[bold]Currency:[/bold] {model.pricing.currency}",
+                title="[bold]Pricing[/bold]",
+                border_style="yellow",
+            ))
+
+        # Metadata
+        console.print(
+            Panel(
+                "[bold]Created:[/bold] {model.created_at}\n"
+                "[bold]Updated:[/bold] {model.updated_at}",
+                title="[bold]Metadata[/bold]",
+                border_style="magenta",
+            )
+        )
+
+    except Exception:
+        console.print("[red]Error showing model info: {str(e)}[/red]")
+
+
+@app.command()
+def search_models(
+    query: str = typer.Argument(..., help="Search query"),
+):
+    """Search models by name, description, or tags."""
+    try:
+        results = model_library.search_models(query)
+
+        if not results:
+            console.print("[yellow]No models found matching '{query}'[/yellow]")
+            return
+
+        console.print("[bold]Search Results for '{query}'[/bold]")
+        console.print("Found {len(results)} model(s)\n")
+
+        table = Table(title="Search Results")
+        table.add_column("Provider", style="cyan")
+        table.add_column("Model ID", style="blue")
+        table.add_column("Display Name", style="green")
+        table.add_column("Description", style="white")
+        table.add_column("Tags", style="yellow")
+
+        for model in results:
+            table.add_row(
+                model.provider.title(),
+                model.model_id,
+                model.display_name,
+                (
+                    model.description[:50] + "..."
+                    if len(model.description) > 50
+                    else model.description
+                ),
+                ", ".join(model.tags[:3]) + ("..." if len(model.tags) > 3 else ""),
+            )
+
+        console.print(table)
+
+    except Exception:
+        console.print("[red]Error searching models: {str(e)}[/red]")
+
+
+@app.command()
+def model_stats():
+    """Show statistics about the model library."""
+    try:
+        stats = model_library.get_model_statistics()
+
+        console.print(
+            Panel(
+                "[bold]Total Models:[/bold] {stats['total_models']}\n"
+                "[bold]Active Models:[/bold] {stats['active_models']}\n"
+                "[bold]Local Models:[/bold] {stats['local_models']}\n"
+                "[bold]Free Models:[/bold] {stats['free_models']}",
+                title="[bold]Model Library Statistics[/bold]",
+                border_style="blue",
+            )
+        )
+
+        # Providers breakdown
+        if stats["providers"]:
+            console.print("\n[bold]Models by Provider:[/bold]")
+            provider_table = Table()
+            provider_table.add_column("Provider", style="cyan")
+            provider_table.add_column("Count", style="green")
+
+            for provider, count in sorted(stats["providers"].items()):
+                provider_table.add_row(provider.title(), str(count))
+
+            console.print(provider_table)
+
+        # Tiers breakdown
+        if stats["tiers"]:
+            console.print("\n[bold]Models by Tier:[/bold]")
+            tier_table = Table()
+            tier_table.add_column("Tier", style="yellow")
+            tier_table.add_column("Count", style="green")
+
+            for tier, count in sorted(stats["tiers"].items()):
+                tier_table.add_row(tier.title(), str(count))
+
+            console.print(tier_table)
+
+        # Types breakdown
+        if stats["types"]:
+            console.print("\n[bold]Models by Type:[/bold]")
+            type_table = Table()
+            type_table.add_column("Type", style="magenta")
+            type_table.add_column("Count", style="green")
+
+            for type_name, count in sorted(stats["types"].items()):
+                type_table.add_row(type_name.title(), str(count))
+
+            console.print(type_table)
+
+    except Exception:
+        console.print("[red]Error showing model statistics: {str(e)}[/red]")
+
+
+@app.command()
+def export_models(
+    file_path: str = typer.Argument(..., help="Output file path"),
+):
+    """Export the model library to a file."""
+    try:
+        if model_library.export_library(file_path):
+            console.print("[green]Model library exported to {file_path}[/green]")
+        else:
+            console.print("[red]Failed to export model library to {file_path}[/red]")
+    except Exception:
+        console.print("[red]Error exporting models: {str(e)}[/red]")
+
+
+@app.command()
+def import_models(
+    file_path: str = typer.Argument(..., help="Input file path"),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Overwrite existing models"
+    ),
+):
+    """Import models from a file."""
+    try:
+        if model_library.import_library(file_path, overwrite):
+            console.print("[green]Models imported from {file_path}[/green]")
+        else:
+            console.print("[red]Failed to import models from {file_path}[/red]")
+    except Exception:
+        console.print("[red]Error importing models: {str(e)}[/red]")
+
+
+@app.command()
+def register():
+    """Register a new model interactively."""
+    try:
+        console.print("[bold blue]Model Registration Wizard[/bold blue]")
+        console.print(
+            "This wizard will help you register a new model in the library.\n"
+        )
+
+        # Basic Information
+        console.print("[bold]Basic Information[/bold]")
+        provider = Prompt.ask("Provider name", default="custom")
+        model_id = Prompt.ask("Model ID")
+        display_name = Prompt.ask("Display name", default=model_id)
+        description = Prompt.ask("Description", default="Custom model")
+
+        # Model Type
+        console.print("\n[bold]Model Type[/bold]")
+        console.print(
+            "Available types: chat, completion, embedding, vision, audio, multimodal"
+        )
+        model_type_input = Prompt.ask("Model type", default="chat")
+        try:
+            model_type = ModelType(model_type_input.lower())
+        except ValueError:
+            console.print("[red]Invalid model type: {model_type_input}[/red]")
+            return
+
+        # Model Tier
+        console.print("\n[bold]Model Tier[/bold]")
+        console.print("Available tiers: free, basic, standard, premium, enterprise")
+        tier_input = Prompt.ask("Model tier", default="standard")
+        try:
+            tier = ModelTier(tier_input.lower())
+        except ValueError:
+            console.print("[red]Invalid model tier: {tier_input}[/red]")
+            return
+
+        # Capabilities
+        console.print("\n[bold]Model Capabilities[/bold]")
+        max_tokens = Prompt.ask("Max output tokens", default="4096")
+        max_input_tokens = Prompt.ask("Max input tokens", default="8192")
+        context_window = Prompt.ask("Context window size", default="8192")
+        supports_streaming = Confirm.ask("Supports streaming?", default=True)
+        supports_function_calling = Confirm.ask(
+            "Supports function calling?", default=False
+        )
+        supports_vision = Confirm.ask("Supports vision?", default=False)
+        supports_audio = Confirm.ask("Supports audio?", default=False)
+        supports_embeddings = Confirm.ask("Supports embeddings?", default=False)
+        training_data_cutoff = Prompt.ask(
+            "Training data cutoff (YYYY-MM)", default="2023-12"
+        )
+
+        # Pricing
+        console.print("\n[bold]Pricing Information[/bold]")
+        input_cost = Prompt.ask("Input cost per 1K tokens ($)", default="0.0")
+        output_cost = Prompt.ask("Output cost per 1K tokens ($)", default="0.0")
+        free_tier_limit = Prompt.ask("Free tier limit (calls per month)", default="0")
+        free_tier_reset = Prompt.ask(
+            "Free tier reset period",
+            choices=["daily", "weekly", "monthly"],
+            default="monthly",
+        )
+
+        # Additional Information
+        console.print("\n[bold]Additional Information[/bold]")
+        is_local = Confirm.ask("Is this a local model?", default=False)
+        is_active = Confirm.ask("Is this model active?", default=True)
+
+        # Tags
+        console.print("\n[bold]Tags[/bold]")
+        console.print("Enter tags separated by commas (e.g., coding, fast, reliable)")
+        tags_input = Prompt.ask("Tags", default="custom")
+        tags = [tag.strip() for tag in tags_input.split(",")]
+
+        # Create model configuration
+        from cosmosapien.core.model_library import (
+            ModelCapability,
+            ModelConfig,
+            ModelPricing,
+        )
+
+        model_config = ModelConfig(
+            name="{provider}-{model_id}",
+            provider=provider,
+            model_id=model_id,
+            display_name=display_name,
+            description=description,
+            model_type=model_type,
+            tier=tier,
+            capabilities=ModelCapability(
+                max_tokens=int(max_tokens) if max_tokens.isdigit() else None,
+                max_input_tokens=(
+                    int(max_input_tokens) if max_input_tokens.isdigit() else None
+                ),
+                supports_streaming=supports_streaming,
+                supports_function_calling=supports_function_calling,
+                supports_vision=supports_vision,
+                supports_audio=supports_audio,
+                supports_embeddings=supports_embeddings,
+                context_window=(
+                    int(context_window) if context_window.isdigit() else None
+                ),
+                training_data_cutoff=(
+                    training_data_cutoff if training_data_cutoff != "2023-12" else None
+                ),
+            ),
+            pricing=ModelPricing(
+                input_cost_per_1k_tokens=float(input_cost),
+                output_cost_per_1k_tokens=float(output_cost),
+                free_tier_limit=(
+                    int(free_tier_limit) if free_tier_limit.isdigit() else 0
+                ),
+                free_tier_reset_period=free_tier_reset,
+            ),
+            tags=tags,
+            is_active=is_active,
+            is_local=is_local,
+        )
+
+        # Show summary
+        console.print("\n[bold]Model Configuration Summary[/bold]")
+        console.print(
+            Panel(
+                "[bold]Provider:[/bold] {model_config.provider}\n"
+                "[bold]Model ID:[/bold] {model_config.model_id}\n"
+                "[bold]Display Name:[/bold] {model_config.display_name}\n"
+                "[bold]Description:[/bold] {model_config.description}\n"
+                "[bold]Type:[/bold] {model_config.model_type.value}\n"
+                "[bold]Tier:[/bold] {model_config.tier.value}\n"
+                "[bold]Local:[/bold] {'Yes' if model_config.is_local else 'No'}\n"
+                "[bold]Active:[/bold] {'Yes' if model_config.is_active else 'No'}\n"
+                "[bold]Tags:[/bold] {', '.join(model_config.tags)}",
+                title="[bold]Configuration Summary[/bold]",
+                border_style="blue",
+            )
+        )
+
+        # Confirm registration
+        if Confirm.ask("Register this model?"):
+            model_id_full = "{provider}:{model_id}"
+            if model_library.add_model(model_config):
+                console.print(
+                    "[green]Model '{model_id_full}' registered successfully![/green]"
+                )
+                console.print(
+                    "[dim]You can now use this model with: cosmo ask --provider {provider} --model {model_id}[/dim]"
+                )
+            else:
+                console.print(
+                    "[red]Failed to register model. It may already exist.[/red]"
+                )
+        else:
+            console.print("[yellow]Model registration cancelled.[/yellow]")
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Model registration cancelled.[/yellow]")
+    except Exception:
+        console.print("[red]Error during registration: {str(e)}[/red]")
+
+
+@app.command()
+def register_quick(
+    provider: str = typer.Argument(..., help="Provider name"),
+    model_id: str = typer.Argument(..., help="Model ID"),
+    display_name: str = typer.Option(None, "--name", help="Display name"),
+    description: str = typer.Option(None, "--desc", help="Model description"),
+    tier: str = typer.Option(
+        "standard",
+        "--tier",
+        help="Model tier (free, basic, standard, premium, enterprise)",
+    ),
+    model_type: str = typer.Option(
+        "chat",
+        "--type",
+        help="Model type (chat, completion, embedding, vision, audio, multimodal)",
+    ),
+    max_tokens: int = typer.Option(4096, "--max-tokens", help="Maximum output tokens"),
+    context_window: int = typer.Option(8192, "--context", help="Context window size"),
+    input_cost: float = typer.Option(
+        0.0, "--input-cost", help="Input cost per 1K tokens"
+    ),
+    output_cost: float = typer.Option(
+        0.0, "--output-cost", help="Output cost per 1K tokens"
+    ),
+    free_limit: int = typer.Option(0, "--free-limit", help="Free tier limit"),
+    tags: str = typer.Option("", "--tags", help="Comma-separated tags"),
+    is_local: bool = typer.Option(False, "--local", help="Is local model"),
+):
+    """Quickly register a new model with minimal input."""
+    try:
+        # Parse inputs
+        try:
+            model_type_enum = ModelType(model_type.lower())
+            tier_enum = ModelTier(tier.lower())
+        except ValueError:
+            console.print("[red]Invalid model type or tier: {str(e)}[/red]")
+            return
+
+        # Set defaults
+        display_name = display_name or model_id
+        description = description or "{display_name} model"
+        tags_list = [tag.strip() for tag in tags.split(",")] if tags else ["custom"]
+
+        # Create model configuration
+        from cosmosapien.core.model_library import (
+            ModelCapability,
+            ModelConfig,
+            ModelPricing,
+        )
+
+        model_config = ModelConfig(
+            name="{provider}-{model_id}",
+            provider=provider,
+            model_id=model_id,
+            display_name=display_name,
+            description=description,
+            model_type=model_type_enum,
+            tier=tier_enum,
+            capabilities=ModelCapability(
+                max_tokens=max_tokens,
+                max_input_tokens=context_window,
+                supports_streaming=True,
+                supports_function_calling=False,
+                supports_vision=False,
+                supports_audio=False,
+                supports_embeddings=False,
+                context_window=context_window,
+            ),
+            pricing=ModelPricing(
+                input_cost_per_1k_tokens=input_cost,
+                output_cost_per_1k_tokens=output_cost,
+                free_tier_limit=free_limit,
+            ),
+            tags=tags_list,
+            is_active=True,
+            is_local=is_local,
+        )
+
+        # Register model
+        model_id_full = "{provider}:{model_id}"
+        if model_library.add_model(model_config):
+            console.print(
+                "[green]Model '{model_id_full}' registered successfully![/green]"
+            )
+            console.print(
+                "[dim]Use: cosmo ask --provider {provider} --model {model_id}[/dim]"
+            )
+        else:
+            console.print("[red]Failed to register model. It may already exist.[/red]")
+
+    except Exception:
+        console.print("[red]Error during registration: {str(e)}[/red]")
+
+
+@app.command()
+def unregister(
+    model_id: str = typer.Argument(..., help="Model ID (format: provider:model_id)"),
+    confirm: bool = typer.Option(False, "--confirm", help="Skip confirmation prompt"),
+):
+    """Unregister a model from the library."""
+    try:
+        if not confirm:
+            if not Confirm.ask("Are you sure you want to unregister '{model_id}'?"):
+                console.print("[yellow]Unregistration cancelled.[/yellow]")
+                return
+
+        if model_library.remove_model(model_id):
+            console.print(
+                "[green]Model '{model_id}' unregistered successfully![/green]"
+            )
+        else:
+            console.print("[red]Model '{model_id}' not found in library.[/red]")
+
+    except Exception:
+        console.print("[red]Error during unregistration: {str(e)}[/red]")
+
+
+@app.command()
+def register_template(
+    template: str = typer.Argument(
+        ..., help="Template name (gpt4, claude, gemini, local, custom)"
+    ),
+    provider: str = typer.Option(None, "--provider", help="Override provider name"),
+    model_id: str = typer.Option(None, "--model-id", help="Override model ID"),
+    display_name: str = typer.Option(None, "--name", help="Override display name"),
+):
+    """Register a model using predefined templates."""
+    try:
+        from cosmosapien.core.model_library import (
+            ModelCapability,
+            ModelConfig,
+            ModelPricing,
+        )
+
+        # Define templates
+        templates = {
+            "gpt4": {
+                "provider": "openai",
+                "model_id": "gpt-4",
+                "display_name": "GPT-4",
+                "description": "Most capable GPT model for complex reasoning tasks",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.PREMIUM,
+                "capabilities": ModelCapability(
+                    max_tokens=8192,
+                    max_input_tokens=8192,
+                    supports_streaming=True,
+                    supports_function_calling=True,
+                    context_window=8192,
+                    training_data_cutoff="2023-04",
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.03,
+                    output_cost_per_1k_tokens=0.06,
+                    free_tier_limit=0,
+                ),
+                "tags": ["reasoning", "complex-tasks", "function-calling"],
+            },
+            "gpt35": {
+                "provider": "openai",
+                "model_id": "gpt-3.5-turbo",
+                "display_name": "GPT-3.5 Turbo",
+                "description": "Fast and efficient model for most tasks",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.BASIC,
+                "capabilities": ModelCapability(
+                    max_tokens=4096,
+                    max_input_tokens=4096,
+                    supports_streaming=True,
+                    supports_function_calling=True,
+                    context_window=4096,
+                    training_data_cutoff="2021-09",
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.0015,
+                    output_cost_per_1k_tokens=0.002,
+                    free_tier_limit=3,
+                ),
+                "tags": ["fast", "efficient", "general-purpose"],
+            },
+            "claude": {
+                "provider": "claude",
+                "model_id": "claude-3-sonnet-20240229",
+                "display_name": "Claude 3 Sonnet",
+                "description": "Balanced Claude model for most tasks",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.STANDARD,
+                "capabilities": ModelCapability(
+                    max_tokens=4096,
+                    max_input_tokens=200000,
+                    supports_streaming=True,
+                    supports_function_calling=True,
+                    context_window=200000,
+                    training_data_cutoff="2023-08",
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.003,
+                    output_cost_per_1k_tokens=0.015,
+                    free_tier_limit=0,
+                ),
+                "tags": ["balanced", "analysis", "long-context"],
+            },
+            "gemini": {
+                "provider": "gemini",
+                "model_id": "gemini-pro",
+                "display_name": "Gemini Pro",
+                "description": "Google's advanced language model",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.STANDARD,
+                "capabilities": ModelCapability(
+                    max_tokens=2048,
+                    max_input_tokens=30720,
+                    supports_streaming=True,
+                    supports_function_calling=False,
+                    context_window=30720,
+                    training_data_cutoff="2023-02",
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.0,
+                    output_cost_per_1k_tokens=0.0,
+                    free_tier_limit=15,
+                ),
+                "tags": ["google", "free-tier", "general-purpose"],
+            },
+            "local": {
+                "provider": "llama",
+                "model_id": "llama3.2:8b",
+                "display_name": "Llama 3.2 8B",
+                "description": "Local Llama 3.2 model (8B parameters)",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.FREE,
+                "capabilities": ModelCapability(
+                    max_tokens=4096,
+                    max_input_tokens=8192,
+                    supports_streaming=True,
+                    supports_function_calling=False,
+                    context_window=8192,
+                    training_data_cutoff="2023-12",
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.0,
+                    output_cost_per_1k_tokens=0.0,
+                    free_tier_limit=float("inf"),
+                ),
+                "tags": ["local", "free", "llama", "8b"],
+                "is_local": True,
+            },
+            "custom": {
+                "provider": "custom",
+                "model_id": "custom-v1",
+                "display_name": "Custom Model",
+                "description": "Custom model for specific use cases",
+                "model_type": ModelType.CHAT,
+                "tier": ModelTier.STANDARD,
+                "capabilities": ModelCapability(
+                    max_tokens=2048,
+                    max_input_tokens=4096,
+                    supports_streaming=True,
+                    context_window=4096,
+                ),
+                "pricing": ModelPricing(
+                    input_cost_per_1k_tokens=0.005,
+                    output_cost_per_1k_tokens=0.01,
+                    free_tier_limit=10,
+                ),
+                "tags": ["custom", "specialized"],
+            },
+        }
+
+        if template.lower() not in templates:
+            console.print("[red]Unknown template: {template}[/red]")
+            console.print("Available templates: {', '.join(templates.keys())}")
+            return
+
+        # Get template
+        template_config = templates[template.lower()]
+
+        # Override with user-provided values
+        if provider:
+            template_config["provider"] = provider
+        if model_id:
+            template_config["model_id"] = model_id
+        if display_name:
+            template_config["display_name"] = display_name
+
+        # Create model configuration
+        model_config = ModelConfig(
+            name="{template_config['provider']}-{template_config['model_id']}",
+            provider=template_config["provider"],
+            model_id=template_config["model_id"],
+            display_name=template_config["display_name"],
+            description=template_config["description"],
+            model_type=template_config["model_type"],
+            tier=template_config["tier"],
+            capabilities=template_config["capabilities"],
+            pricing=template_config["pricing"],
+            tags=template_config["tags"],
+            is_active=True,
+            is_local=template_config.get("is_local", False),
+        )
+
+        # Show summary
+        console.print("[bold]Registering model from template: {template}[/bold]")
+        console.print(
+            Panel(
+                "[bold]Provider:[/bold] {model_config.provider}\n"
+                "[bold]Model ID:[/bold] {model_config.model_id}\n"
+                "[bold]Display Name:[/bold] {model_config.display_name}\n"
+                "[bold]Description:[/bold] {model_config.description}\n"
+                "[bold]Type:[/bold] {model_config.model_type.value}\n"
+                "[bold]Tier:[/bold] {model_config.tier.value}\n"
+                "[bold]Tags:[/bold] {', '.join(model_config.tags)}",
+                title="[bold]Template Configuration[/bold]",
+                border_style="green",
+            )
+        )
+
+        # Register model
+        model_id_full = "{model_config.provider}:{model_config.model_id}"
+        if model_library.add_model(model_config):
+            console.print(
+                "[green]Model '{model_id_full}' registered successfully from template![/green]"
+            )
+            console.print(
+                "[dim]Use: cosmo ask --provider {model_config.provider} --model {model_config.model_id}[/dim]"
+            )
+        else:
+            console.print("[red]Failed to register model. It may already exist.[/red]")
+
+    except Exception:
+        console.print("[red]Error during template registration: {str(e)}[/red]")
+
+
+@app.command()
+def register_from_file(
+    file_path: str = typer.Argument(
+        ..., help="JSON file path containing model configuration"
+    ),
+    provider: str = typer.Option(None, "--provider", help="Override provider name"),
+    model_id: str = typer.Option(None, "--model-id", help="Override model ID"),
+):
+    """Register a model from a JSON configuration file."""
+    try:
+        import json
+
+        # Read configuration file
+        with open(file_path, "r") as f:
+            config_data = json.load(f)
+
+        # Override with user-provided values
+        if provider:
+            config_data["provider"] = provider
+        if model_id:
+            config_data["model_id"] = model_id
+
+        # Create model configuration
+        from cosmosapien.core.model_library import ModelConfig
+
+        model_config = ModelConfig.from_dict(config_data)
+
+        # Show summary
+        console.print("[bold]Registering model from file: {file_path}[/bold]")
+        console.print(
+            Panel(
+                "[bold]Provider:[/bold] {model_config.provider}\n"
+                "[bold]Model ID:[/bold] {model_config.model_id}\n"
+                "[bold]Display Name:[/bold] {model_config.display_name}\n"
+                "[bold]Description:[/bold] {model_config.description}\n"
+                "[bold]Type:[/bold] {model_config.model_type.value}\n"
+                "[bold]Tier:[/bold] {model_config.tier.value}\n"
+                "[bold]Tags:[/bold] {', '.join(model_config.tags)}",
+                title="[bold]File Configuration[/bold]",
+                border_style="yellow",
+            )
+        )
+
+        # Register model
+        model_id_full = "{model_config.provider}:{model_config.model_id}"
+        if model_library.add_model(model_config):
+            console.print(
+                "[green]Model '{model_id_full}' registered successfully from file![/green]"
+            )
+            console.print(
+                "[dim]Use: cosmo ask --provider {model_config.provider} --model {model_config.model_id}[/dim]"
+            )
+        else:
+            console.print("[red]Failed to register model. It may already exist.[/red]")
+
+    except FileNotFoundError:
+        console.print("[red]File not found: {file_path}[/red]")
+    except json.JSONDecodeError:
+        console.print("[red]Invalid JSON format in file: {file_path}[/red]")
+    except Exception:
+        console.print("[red]Error during file registration: {str(e)}[/red]")
+
+
+@app.command()
+def register_help():
+    """Show help for model registration methods."""
+    console.print("[bold blue]Model Registration Methods[/bold blue]\n")
+
+    # Interactive registration
+    console.print(
+        "[bold]1. Interactive Registration (Recommended for beginners)[/bold]"
+    )
+    console.print("   [cyan]cosmo register[/cyan]")
+    console.print(
+        "   Guided wizard that asks for all required information step by step.\n"
+    )
+
+    # Quick registration
+    console.print("[bold]2. Quick Registration (For simple models)[/bold]")
+    console.print(
+        "   [cyan]cosmo register-quick <provider> <model-id> [options][/cyan]"
+    )
+    console.print(
+        "   Register a model with minimal input using command-line options.\n"
+    )
+
+    # Template registration
+    console.print("[bold]3. Template Registration (For common models)[/bold]")
+    console.print("   [cyan]cosmo register-template <template> [options][/cyan]")
+    console.print("   Available templates: gpt4, gpt35, claude, gemini, local, custom")
+    console.print("   Example: [cyan]cosmo register-template gpt4[/cyan]\n")
+
+    # File registration
+    console.print("[bold]4. File-based Registration (For complex models)[/bold]")
+    console.print("   [cyan]cosmo register-from-file <json-file> [options][/cyan]")
+    console.print("   Register from a JSON configuration file.")
+    console.print(
+        "   Example: [cyan]cosmo register-from-file examples/model_template.json[/cyan]\n"
+    )
+
+    # Management
+    console.print("[bold]5. Model Management[/bold]")
+    console.print("   [cyan]cosmo unregister <model-id>[/cyan] - Remove a model")
+    console.print("   [cyan]cosmo models[/cyan] - List all registered models")
+    console.print("   [cyan]cosmo model-info <model-id>[/cyan] - Show model details\n")
+
+    # Examples
+    console.print("[bold]Quick Examples:[/bold]")
+    console.print("   [cyan]cosmo register[/cyan] - Start interactive wizard")
+    console.print(
+        "   [cyan]cosmo register-quick myprovider mymodel --tier premium[/cyan]"
+    )
+    console.print("   [cyan]cosmo register-template claude --provider myclaude[/cyan]")
+    console.print("   [cyan]cosmo register-from-file my_model.json[/cyan]\n")
+
+    console.print("[dim]For detailed examples, see: docs/MODEL_LIBRARY.md[/dim]")
+
+
+@app.command()
+def distribute(
+    prompt: str = typer.Argument(..., help="Prompt with multiple sub-questions or a complex question to distribute by model confidence."),
+    models: str = typer.Option(
+        None, "--models", help="Comma-separated list of models (provider:model)"
+    ),
+    priority: int = typer.Option(3, "--priority", help="Job priority (1-5, 5=highest)"),
+    timeout: int = typer.Option(30, "--timeout", help="Timeout in seconds"),
+):
+    """Distribute sub-questions to models by confidence and show live progress."""
+    if not ensure_ollama_ready():
+        print("Local model setup was not completed. Exiting.")
+        return
+    import re
+    import asyncio
+    from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+
+    # Parse models
+    if models:
+        model_list = [m.strip() for m in models.split(",") if m.strip()]
+    else:
+        # Use all available local models if present
+        local_models = model_library.get_local_models()
+        if local_models:
+            model_list = [f"{m.provider}:{m.model_id}" for m in local_models]
+        else:
+            # Fallback to 2-3 open-source models for demonstration
+            model_list = ["llama:dolphin-llama3:latest", "huggingface:gpt2"]
+
+    # Split prompt into sub-questions (same as JobDistributor)
+    sub_questions = re.split(r'\d+\. |\n|\?|\.', prompt)
+    sub_questions = [q.strip() for q in sub_questions if q.strip()]
+    if not sub_questions:
+        sub_questions = [prompt]
+
+    # Sort models by confidence (success_rate) -- for now, just use order
+    # TODO: Optionally, fetch model confidence from JobDistributor/model_library
+    sorted_models = model_list
+
+    # Prepare table rows: [Question, Model, Status, Answer]
+    table_rows = []
+    for i, subq in enumerate(sub_questions):
+        model_key = sorted_models[i % len(sorted_models)]
+        table_rows.append([f"Q{i+1}", model_key, "Thinking...", ""])
+
+    def build_table():
+        table = Table(title="Distribute Progress", show_lines=True)
+        table.add_column("Question", style="cyan", no_wrap=True)
+        table.add_column("Model", style="magenta")
+        table.add_column("Status", style="yellow")
+        table.add_column("Answer", style="green")
+        for row in table_rows:
+            table.add_row(*row)
+        return table
+
+    async def get_answer(idx, subq, model_key):
+        provider, model = model_key.split(":", 1)
+        try:
+            model_instance = router.get_model_instance(provider, model)
+            # Show thinking
+            table_rows[idx][2] = "Thinking..."
+            # Await the model's generate method
+            response = await model_instance.generate(subq)
+            table_rows[idx][2] = "Done"
+            table_rows[idx][3] = response.content[:60] + ("..." if len(response.content) > 60 else "")
+            return (idx, subq, model_key, response.content)
+        except Exception as e:
+            table_rows[idx][2] = "Error"
+            table_rows[idx][3] = str(e)
+            return (idx, subq, model_key, f"Error: {str(e)}")
+
+    async def _distribute():
+        results = [None] * len(sub_questions)
+        tasks = [get_answer(i, subq, sorted_models[i % len(sorted_models)]) for i, subq in enumerate(sub_questions)]
+        with Live(build_table(), refresh_per_second=4, console=console) as live:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                idx = result[0]
+                # Update table as each answer comes in
+                live.update(build_table())
+                results[idx] = result
+        # Print detailed results
+        combined = []
+        for idx, subq, model_key, answer in results:
+            console.print(Panel(answer, title=f"Q{idx+1} ({model_key})", border_style="blue"))
+            combined.append(f"Q: {subq}\nA: {answer}")
+        console.print("[green]Combined Answer:[/green]")
+        console.print("\n\n".join(combined))
+
+    asyncio.run(_distribute())
+
+
+@app.command()
+def squeeze(
+    prompt: str = typer.Argument(..., help="Prompt to process"),
+    explain: bool = typer.Option(
+        False, "--explain", help="Show routing decision without execution"
+    ),
+):
+    """Use all available free tiers and local models to process the task."""
+    try:
+        from cosmosapien.core.job_distributor import JobDistributor, JobType
+
+        # Initialize job distributor
+        job_distributor = JobDistributor(config_manager, model_library, local_manager)
+
+        # Get all free tier and local models
+        free_models = []
+        models = model_library.list_models()
+
+        for model in models:
+            if model.is_active:
+                # Check if it's a free tier model or local model
+                if (
+                    model.pricing.free_tier_limit > 0
+                    or model.is_local
+                    or model.pricing.input_cost_per_1k_tokens == 0.0
+                ):
+                    free_models.append("{model.provider}:{model.model_id}")
+
+        if not free_models:
+            console.print(
+                "[yellow]No free tier models available. Using smart routing instead.[/yellow]"
+            )
+            # Fallback to smart routing
+            routing_decision = smart_router.smart_route(prompt, explain_only=explain)
+            if explain:
+                console.print("[bold]Smart Routing Decision[/bold]")
+                console.print(
+                    "Selected: {routing_decision.selected_provider}:{routing_decision.selected_model}"
+                )
+                console.print("Reasoning: {routing_decision.reasoning}")
+                console.print("Complexity: {routing_decision.complexity.value}")
+                return
+
+            # Execute with smart routing
+            from ..models import get_model_instance
+
+            model_instance = get_model_instance(
+                routing_decision.selected_provider, routing_decision.selected_model
+            )
+            response = asyncio.run(model_instance.generate(prompt))
+            console.print(response.content)
+            return
+
+        # Create job request for free tier distribution
+        job_request = job_distributor.create_job(
+            prompt=prompt,
+            job_type=JobType.PARALLEL_TASK,  # Try all free models in parallel
+            models=free_models,
+            priority=1,  # Low priority for free tier usage
+            timeout=60,  # Longer timeout for free models
+        )
+
+        if explain:
+            console.print("[bold]Squeeze Distribution Decision[/bold]")
+            console.print("Free models available: {len(free_models)}")
+            console.print("Models: {', '.join(free_models)}")
+            console.print("Strategy: Parallel execution across all free tiers")
+            return
+
+        # Execute with free tier distribution
+        console.print("[bold]Squeezing across {len(free_models)} free models...[/bold]")
+        console.print("Models: {', '.join(free_models)}")
+
+        result = job_distributor.distribute_job(job_request)
+
+        # Display result
+        if result.success:
+            console.print("\n[green]Task completed using free tier![/green]")
+            console.print("Model used: {result.model_used}")
+            console.print("Execution time: {result.execution_time:.2f}s")
+            console.print("Cost: $0.00 (free tier)")
+
+            console.print("\n[bold]Response:[/bold]")
+            console.print(result.response)
+        else:
+            console.print("\n[red]All free tiers failed![/red]")
+            console.print("Error: {result.error}")
+            console.print("Attempted models: {', '.join(free_models)}")
+
+        # Save stats
+        job_distributor.save_stats()
+
+    except Exception:
+        console.print("[red]Error during squeeze execution: {str(e)}[/red]")
+
+
+@app.command()
+def job_stats():
+    """Show job distribution statistics."""
+    try:
+        from cosmosapien.core.job_distributor import JobDistributor
+
+        # Initialize job distributor
+        job_distributor = JobDistributor(config_manager, model_library, local_manager)
+
+        # Get statistics
+        stats = job_distributor.get_distribution_stats()
+
+        console.print("[bold blue]Job Distribution Statistics[/bold blue]\n")
+
+        # Overall stats
+        console.print("[bold]Overall Performance[/bold]")
+        console.print("Active Jobs: {stats['active_jobs']}")
+        console.print("Completed Jobs: {stats['completed_jobs']}")
+        console.print(
+            "Average Response Time: {stats['performance']['avg_response_time']:.2f}s"
+        )
+        console.print(
+            "Total Success Rate: {stats['performance']['total_success_rate']:.2%}"
+        )
+        console.print("Total Errors: {stats['performance']['total_errors']}")
+        console.print("Total Tokens: {stats['performance']['total_tokens']:,}")
+        console.print("Total Requests: {stats['performance']['total_requests']:,}\n")
+
+        # Model status
+        console.print("[bold]Model Status[/bold]")
+        if stats["model_status"]:
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Model", style="cyan")
+            table.add_column("Load", justify="center")
+            table.add_column("Success Rate", justify="center")
+            table.add_column("Avg Response", justify="center")
+            table.add_column("Total Tokens", justify="right")
+            table.add_column("Requests", justify="center")
+            table.add_column("Errors", justify="center")
+            table.add_column("Last Used", justify="center")
+
+            for model_key, status in stats["model_status"].items():
+                table.add_row(
+                    model_key,
+                    str(status["current_load"]),
+                    "{status['success_rate']:.2%}",
+                    "{status['avg_response_time']:.2f}s",
+                    "{status['total_tokens']:,}",
+                    str(status["total_requests"]),
+                    str(status["error_count"]),
+                    status["last_used"][:19] if status["last_used"] else "Never",
+                )
+
+            console.print(table)
+        else:
+            console.print("No model statistics available.")
+
+    except Exception:
+        console.print("[red]Error getting job statistics: {str(e)}[/red]")
+
+
+@app.command()
+def reset_job_stats():
+    """Reset job distribution statistics."""
+    try:
+        from cosmosapien.core.job_distributor import JobDistributor
+
+        # Initialize job distributor
+        job_distributor = JobDistributor(config_manager, model_library, local_manager)
+
+        # Reset stats
+        job_distributor.save_stats()
+
+        console.print("[green]Job distribution statistics reset successfully![/green]")
+
+    except Exception:
+        console.print("[red]Error resetting job statistics: {str(e)}[/red]")
+
+
+@app.command()
+def token_stats():
+    """Show detailed token usage statistics across models."""
+    try:
+        from cosmosapien.core.job_distributor import JobDistributor
+
+        # Initialize job distributor
+        job_distributor = JobDistributor(config_manager, model_library, local_manager)
+
+        # Get statistics
+        stats = job_distributor.get_distribution_stats()
+
+        console.print("[bold blue]Token Usage Statistics[/bold blue]\n")
+
+        # Overall token stats
+        console.print("[bold]Overall Token Usage[/bold]")
+        console.print("Total Tokens: {stats['performance']['total_tokens']:,}")
+        console.print("Total Requests: {stats['performance']['total_requests']:,}")
+        console.print(
+            "Average Tokens per Request: {stats['performance']['total_tokens'] / max(stats['performance']['total_requests'], 1):.1f}\n"
+        )
+
+        # Model token breakdown
+        console.print("[bold]Token Usage by Model[/bold]")
+        if stats["model_status"]:
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Model", style="cyan")
+            table.add_column("Total Tokens", justify="right")
+            table.add_column("Input Tokens", justify="right")
+            table.add_column("Output Tokens", justify="right")
+            table.add_column("Avg/Request", justify="right")
+            table.add_column("Requests", justify="center")
+
+            # Sort by total tokens (descending)
+            sorted_models = sorted(
+                stats["model_status"].items(),
+                key=lambda x: x[1]["total_tokens"],
+                reverse=True,
+            )
+
+            for model_key, status in sorted_models:
+                if status["total_tokens"] > 0:  # Only show models with usage
+                    table.add_row(
+                        model_key,
+                        "{status['total_tokens']:,}",
+                        "{status['total_input_tokens']:,}",
+                        "{status['total_output_tokens']:,}",
+                        "{status['avg_tokens_per_request']:.1f}",
+                        str(status["total_requests"]),
+                    )
+
+            console.print(table)
+
+            # Token distribution chart
+            console.print("\n[bold]Token Distribution[/bold]")
+            total_tokens = stats["performance"]["total_tokens"]
+            if total_tokens > 0:
+                for model_key, status in sorted_models[:5]:  # Top 5 models
+                    if status["total_tokens"] > 0:
+                        percentage = (status["total_tokens"] / total_tokens) * 100
+                        bar_length = int(percentage / 2)  # Scale for display
+                        "█" * bar_length
+                        console.print(
+                            "  {model_key:<30} {bar} {percentage:.1f}% ({status['total_tokens']:,} tokens)"
+                        )
+        else:
+            console.print("No token usage data available.")
+
+    except Exception:
+        console.print("[red]Error getting token statistics: {str(e)}[/red]")
+
+
+@app.command()
+def model_performance():
+    """Show comprehensive model performance statistics."""
+    try:
+        from cosmosapien.core.job_distributor import JobDistributor
+
+        # Initialize job distributor
+        job_distributor = JobDistributor(config_manager, model_library, local_manager)
+
+        # Get statistics
+        stats = job_distributor.get_distribution_stats()
+
+        console.print("[bold blue]Model Performance Statistics[/bold blue]\n")
+
+        # Overall performance
+        console.print("[bold]Overall Performance[/bold]")
+        console.print("Active Jobs: {stats['active_jobs']}")
+        console.print("Completed Jobs: {stats['completed_jobs']}")
+        console.print(
+            "Average Response Time: {stats['performance']['avg_response_time']:.2f}s"
+        )
+        console.print(
+            "Total Success Rate: {stats['performance']['total_success_rate']:.2%}"
+        )
+        console.print("Total Errors: {stats['performance']['total_errors']}")
+        console.print("Total Tokens: {stats['performance']['total_tokens']:,}")
+        console.print("Total Requests: {stats['performance']['total_requests']:,}\n")
+
+        # Detailed model performance
+        console.print("[bold]Model Performance Details[/bold]")
+        if stats["model_status"]:
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Model", style="cyan")
+            table.add_column("Load", justify="center")
+            table.add_column("Success Rate", justify="center")
+            table.add_column("Avg Response", justify="center")
+            table.add_column("Total Tokens", justify="right")
+            table.add_column("Avg Tokens", justify="right")
+            table.add_column("Requests", justify="center")
+            table.add_column("Errors", justify="center")
+
+            # Sort by total tokens (descending)
+            sorted_models = sorted(
+                stats["model_status"].items(),
+                key=lambda x: x[1]["total_tokens"],
+                reverse=True,
+            )
+
+            for model_key, status in sorted_models:
+                table.add_row(
+                    model_key,
+                    str(status["current_load"]),
+                    "{status['success_rate']:.2%}",
+                    "{status['avg_response_time']:.2f}s",
+                    "{status['total_tokens']:,}",
+                    "{status['avg_tokens_per_request']:.1f}",
+                    str(status["total_requests"]),
+                    str(status["error_count"]),
+                )
+
+            console.print(table)
+        else:
+            console.print("No model performance data available.")
+
+    except Exception:
+        console.print("[red]Error getting performance statistics: {str(e)}[/red]")
+
+
+@app.command()
+def config():
+    """Show current configuration."""
+    config_manager.load()
+
+    console.print(
+        Panel(
+            "[bold]Default Provider:[/bold] {config.default_provider}\n"
+            "[bold]Default Model:[/bold] {config.default_model}\n"
+            "[bold]Memory Enabled:[/bold] {config.memory_enabled}\n"
+            "[bold]Memory Path:[/bold] {config.memory_path}\n"
+            "[bold]Plugins Path:[/bold] {config.plugins_path}",
+        title="[bold]Configuration[/bold]",
+            border_style="blue",
+        )
+    )
+
+    # Show smart routing configuration
+    smart_config = config_manager.get_smart_routing_config()
+    console.print(
+        Panel(
+            "[bold]Smart Routing Enabled:[/bold] {smart_config.enabled}\n"
+            "[bold]Prefer Local Models:[/bold] {smart_config.prefer_local}\n"
+            "[bold]Cost Threshold:[/bold] ${smart_config.cost_threshold:.4f}\n"
+            "[bold]Custom Limits:[/bold] {len(smart_config.free_tier_limits)} providers\n"
+            "[bold]Custom Costs:[/bold] {len(smart_config.custom_costs)} providers",
+            title="[bold]Smart Routing Configuration[/bold]",
+            border_style="green",
+        )
+    )
+
+    # Show custom limits and costs
+    if smart_config.free_tier_limits or smart_config.custom_costs:
+        console.print("\n[bold]Custom Smart Routing Settings:[/bold]")
+
+        if smart_config.free_tier_limits:
+            console.print("\n[bold]Free Tier Limits:[/bold]")
+            for provider, models in smart_config.free_tier_limits.items():
+                for model, limit in models.items():
+                    console.print("  • {provider}/{model}: {limit} calls")
+
+        if smart_config.custom_costs:
+            console.print("\n[bold]Custom Costs:[/bold]")
+            for provider, models in smart_config.custom_costs.items():
+                for model, cost in models.items():
+                    console.print("  • {provider}/{model}: ${cost:.4f}/call")
+
+
+@app.command()
+def orchestrate(
+    prompt: str = typer.Argument(..., help="A complex question to be decomposed, distributed, and synthesized by models."),
+    planner_model: str = typer.Option(None, "--planner", help="Model to use for decomposition (provider:model), defaults to best local model"),
+    synthesizer_model: str = typer.Option(None, "--synthesizer", help="Model to use for synthesis/paraphrase, defaults to best local model"),
+):
+    """Meta-agent: Use a model to decompose, distribute, and synthesize answers from a single complex question."""
+    if not ensure_ollama_ready():
+        print("Local model setup was not completed. Exiting.")
+        return
+    import asyncio
+    from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+    import json
+    import re
+
+    # Only use these models
+    preferred_models = [
+        "llama:llama3.2:3b",
+        "llama:llama2:latest",
+        "llama:codellama:13b",
+        "llama:mixtral:8x7b",
+        "llama:mistral:7b",
+    ]
+
+    # Helper: get best available preferred local model
+    def get_best_local_model():
+        local_models = model_library.get_local_models()
+        available = [f"{m.provider}:{m.model_id}" for m in local_models]
+        for m in preferred_models:
+            if m in available:
+                return m
+        raise RuntimeError("No preferred local models available. Please install and activate at least one of: " + ", ".join(preferred_models))
+
+    async def get_plan(prompt, planner_model, available_models):
+        provider, model = planner_model.split(":", 1)
+        planner = router.get_model_instance(provider, model)
+        available_models_str = ", ".join(available_models)
+        planner_prompt = (
+            "You are an expert AI task planner. Given the following complex question, break it down into a set of sub-tasks. "
+            "For each sub-task, assign the most suitable model from this list: [" + available_models_str + "] (choose one per sub-task). "
+            "Return your answer as a JSON array, with each item like: {\"subtask\": \"...\", \"model\": \"...\"}. "
+            "Do not include any explanation or text outside the JSON array.\n\n"
+            "Question: " + prompt
+        )
+        response = await planner.generate(planner_prompt)
+        # Try to extract JSON from the response
+        try:
+            json_start = response.content.find("[")
+            json_end = response.content.rfind("]") + 1
+            plan_json = response.content[json_start:json_end]
+            plan = json.loads(plan_json)
+            return plan
+        except Exception:
+            # Fallback: try to parse a numbered list with model assignments
+            text = response.content.strip()
+            pattern = r"\d+\.\s*(.+?):?\n?\s*\* Model: ([^\n]+)"
+            matches = re.findall(pattern, text)
+            if matches:
+                plan = [{"subtask": subtask.strip(), "model": model.strip()} for subtask, model in matches]
+                return plan
+            # If still nothing, show warning and output
+            console.print("[yellow]Planner model did not return valid JSON or a parseable list. Raw output:[/yellow]")
+            console.print(Panel(text, title="Planner Output", border_style="red"))
+            raise RuntimeError("Planner model did not return valid JSON or a parseable list.")
+
+    async def get_answer(idx, subtask, model_key):
+        provider, model = model_key.split(":", 1)
+        try:
+            model_instance = router.get_model_instance(provider, model)
+            table_rows[idx][2] = "Thinking..."
+            response = await model_instance.generate(subtask)
+            table_rows[idx][2] = "Done"
+            table_rows[idx][3] = response.content[:60] + ("..." if len(response.content) > 60 else "")
+            return (idx, subtask, model_key, response.content)
+        except Exception as e:
+            table_rows[idx][2] = "Error"
+            table_rows[idx][3] = str(e)
+            return (idx, subtask, model_key, f"Error: {str(e)}")
+
+    def build_table():
+        table = Table(title="Meta-Agent Progress", show_lines=True)
+        table.add_column("Sub-Task", style="cyan", no_wrap=True)
+        table.add_column("Model", style="magenta")
+        table.add_column("Status", style="yellow")
+        table.add_column("Answer", style="green")
+        for row in table_rows:
+            table.add_row(*row)
+        return table
+
+    async def _orchestrate():
+        local_models = model_library.get_local_models()
+        available_model_keys = [f"{m.provider}:{m.model_id}" for m in local_models if f"{m.provider}:{m.model_id}" in preferred_models]
+        if not available_model_keys:
+            console.print("[red]No preferred local models available. Please install and activate at least one of: " + ", ".join(preferred_models) + "[/red]")
+            return
+        planner_key = planner_model or get_best_local_model()
+        synthesizer_key = synthesizer_model or get_best_local_model()
+        console.print(f"[bold blue]Using planner:[/bold blue] {planner_key}")
+        console.print(f"[bold blue]Using synthesizer:[/bold blue] {synthesizer_key}")
+        console.print("[bold blue]Decomposing and assigning tasks using planner model...[/bold blue]")
+        plan = await get_plan(prompt, planner_key, available_model_keys)
+        if not plan or not isinstance(plan, list):
+            console.print("[red]Planner did not return a valid plan.[/red]")
+            return
+        # Print breakdown and assignment before running models
+        console.print("\n[bold]Breakdown of sub-tasks and model assignments:[/bold]")
+        for i, item in enumerate(plan):
+            console.print(f"  [cyan]Task {i+1}:[/cyan] {item['subtask']} [magenta]({item['model']})[/magenta] - Asking model...")
+        # Now proceed to live table
+        global table_rows
+        table_rows = []
+        for i, item in enumerate(plan):
+            table_rows.append([f"Task {i+1}", item['model'], "Thinking...", ""])
+        tasks = [get_answer(i, item['subtask'], item['model']) for i, item in enumerate(plan)]
+        results = [None] * len(plan)
+        with Live(build_table(), refresh_per_second=4, console=console) as live:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                idx = result[0]
+                live.update(build_table())
+                results[idx] = result
+        answers_for_summary = "\n".join([
+            f"Task: {plan[idx]['subtask']}\nAnswer: {answer}" for idx, _, _, answer in results
+        ])
+        provider, model = synthesizer_key.split(":", 1)
+        synthesizer = router.get_model_instance(provider, model)
+        summary_prompt = (
+            "Given these answers to sub-tasks, combine and paraphrase them into a single, clear, and concise answer to the original question.\n\n" + answers_for_summary
+        )
+        console.print("[bold blue]Synthesizing final answer using synthesizer model...[/bold blue]")
+        summary_response = await synthesizer.generate(summary_prompt)
+        for idx, subtask, model_key, answer in results:
+            console.print(Panel(answer, title=f"Task {idx+1} ({model_key})", border_style="blue"))
+        console.print("[green]Final Paraphrased Answer:[/green]")
+        console.print(Panel(summary_response.content, title="Meta-Agent Synthesis", border_style="green"))
+
+    asyncio.run(_orchestrate())
+
+
+def ensure_ollama_ready():
+    """Ensure Ollama is installed, running, and at least one model is available."""
+    import platform
+    import subprocess
+    from rich.prompt import Confirm
+    from time import sleep
+
+    # Check if Ollama is installed
+    def is_ollama_installed():
+        try:
+            result = subprocess.run(["ollama", "--version"], capture_output=True, text=True)
+            return result.returncode == 0
+        except FileNotFoundError:
+            return False
+
+    # Check if Ollama is running
+    def is_ollama_running():
+        try:
+            result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    # Install Ollama
+    def install_ollama():
+        system = platform.system().lower()
+        if system == "darwin":
+            print("Installing Ollama for macOS...")
+            subprocess.run(["curl", "-fsSL", "https://ollama.ai/install.sh", "|", "sh"], shell=True)
+        elif system == "linux":
+            print("Installing Ollama for Linux...")
+            subprocess.run(["curl", "-fsSL", "https://ollama.ai/install.sh", "|", "sh"], shell=True)
+        elif system == "windows":
+            print("Please install Ollama manually from https://ollama.com/download/windows")
+            return False
+        else:
+            print(f"Unsupported OS: {system}")
+            return False
+        return is_ollama_installed()
+
+    # Start Ollama
+    def start_ollama():
+        system = platform.system().lower()
+        if system == "darwin":
+            subprocess.run(["open", "-a", "Ollama"])
+        elif system == "linux":
+            subprocess.run(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif system == "windows":
+            print("Please start Ollama manually from the Start menu.")
+            return False
+        sleep(2)
+        return is_ollama_running()
+
+    # Check for at least one model
+    def has_local_models():
+        try:
+            result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
+            return any(line.strip() for line in result.stdout.splitlines()[1:])
+        except Exception:
+            return False
+
+    # Pull a recommended model
+    def pull_default_model():
+        print("Pulling llama3.2:8b (recommended local model)...")
+        subprocess.run(["ollama", "pull", "llama3.2:8b"])
+        sleep(2)
+        return has_local_models()
+
+    # Main logic
+    if not is_ollama_installed() or not is_ollama_running():
+        print("Ollama (for local models) is not installed or running.")
+        if not Confirm.ask("Would you like to install and start it now?", default=True):
+            print("Skipping local model setup.")
+            return False
+        if not is_ollama_installed():
+            if not install_ollama():
+                print("Failed to install Ollama. Please install it manually from https://ollama.com/.")
+                return False
+        if not is_ollama_running():
+            if not start_ollama():
+                print("Failed to start Ollama. Please start it manually.")
+                return False
+    if not has_local_models():
+        print("No local models found in Ollama.")
+        if Confirm.ask("Would you like to pull llama3.2:8b now?", default=True):
+            if not pull_default_model():
+                print("Failed to pull model. Please pull a model manually with 'ollama pull llama3.2:8b'.")
+                return False
+        else:
+            print("No local models available. Skipping local model setup.")
+            return False
+    print("Ollama is ready with at least one local model.")
+    return True
+
+
+# Import and register the list_local_models command from local_models.py
+from .local_models import list_local_models
+app.command()(list_local_models)
+
+# Remove any fallback definition of list_local_models from main.py if present.
+
+# Import and register the orchestrate command from commands/orchestrate.py
+from .commands.orchestrate import orchestrate
+app.command()(orchestrate)
+
+# Remove the orchestrate command definition from main.py if still present.
+
+if __name__ == "__main__":
+    app() 
