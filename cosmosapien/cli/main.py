@@ -34,6 +34,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
+# Import and add redteam commands
+from .redteam import redteam_app
+app.add_typer(redteam_app, name="redteam", help="Red-teaming toolkit for LLM safety evaluation")
+
 # Initialize Rich console
 console = Console()
 

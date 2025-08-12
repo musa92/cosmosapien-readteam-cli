@@ -180,6 +180,25 @@ quick-lint: ## Quick lint check
 quick-format: ## Quick format check
 	black --check cosmosapien/ --diff
 
+# Red-Teaming
+redteam-run-demo: ## Run red-teaming demo with policy_edges pack
+	cosmo redteam demo
+
+redteam-analyze: ## Generate red-teaming analysis report
+	@echo "Red-teaming analysis - use 'cosmo redteam analyze <run-id>'"
+
+redteam-dashboard: ## Launch red-teaming dashboard
+	cosmo redteam dashboard
+
+redteam-export: ## Export red-teaming findings
+	@echo "Red-teaming export - use 'cosmo redteam export <run-id>'"
+
+redteam-packs: ## List available red-teaming scenario packs
+	cosmo redteam packs list
+
+redteam-config: ## Show red-teaming configuration
+	cosmo redteam config
+
 # Helpers
 show-config: ## Show current configuration
 	@echo "Python version:"

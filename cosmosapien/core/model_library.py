@@ -503,7 +503,7 @@ class ModelLibrary:
 
     def add_model(self, model: ModelConfig) -> bool:
         """Add a model to the library."""
-        model_id = "{model.provider}:{model.model_id}"
+        model_id = f"{model.provider}:{model.model_id}"
         if model_id in self.models:
             return False
 
@@ -528,7 +528,7 @@ class ModelLibrary:
         return [
             model
             for model_id, model in self.models.items()
-            if model_id.startswith("{provider}:")
+            if model_id.startswith(f"{provider}:")
         ]
 
     def get_models_by_tier(self, tier: ModelTier) -> List[ModelConfig]:

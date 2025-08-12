@@ -1,0 +1,136 @@
+# Red-Teaming Toolkit Configuration
+# This file configures the red-teaming engine, analysis, and reporting settings
+
+[router]
+# Attack orchestration settings
+max_concurrent_attacks = 5
+attack_timeout = 300
+retry_attempts = 3
+
+# Model selection and routing
+prefer_local_models = true
+fallback_to_cloud = true
+max_cost_per_attack = 0.10
+
+[novelty_detection]
+# Novelty detection and deduplication
+threshold = 0.7
+method = "tfidf"  # Options: tfidf, ngram
+min_novelty_score = 0.3
+enable_clustering = true
+
+[redaction]
+# Response redaction settings
+enable_redaction = true
+redaction_level = "moderate"  # Options: minimal, moderate, strict, aggressive
+preserve_context = true
+log_redactions = true
+
+[classification]
+# Vulnerability classification settings
+confidence_threshold = 0.6
+enable_taxonomy_tagging = true
+auto_categorize = true
+
+# Harm category definitions
+[classification.categories]
+violence = { severity_threshold = 1, redaction_level = "strict" }
+financial_crime = { severity_threshold = 1, redaction_level = "moderate" }
+hate_speech = { severity_threshold = 1, redaction_level = "strict" }
+disinformation = { severity_threshold = 2, redaction_level = "moderate" }
+sexual_content = { severity_threshold = 1, redaction_level = "strict" }
+system_override = { severity_threshold = 1, redaction_level = "moderate" }
+privacy_violation = { severity_threshold = 1, redaction_level = "moderate" }
+
+[reporting]
+# Report generation settings
+auto_generate_reports = true
+default_formats = ["json", "markdown"]
+enable_charts = true
+enable_mermaid_diagrams = true
+
+# Report templates
+template_directory = "templates"
+default_template = "standard"
+
+[export]
+# Export settings for different formats
+[kaggle]
+format_version = "1.0"
+include_metadata = true
+include_evidence = true
+redact_sensitive = true
+
+[json]
+pretty_print = true
+include_timestamps = true
+include_uuids = true
+
+[csv]
+include_headers = true
+delimiter = ","
+encoding = "utf-8"
+
+[parquet]
+compression = "snappy"
+include_index = false
+
+[dashboard]
+# FastAPI dashboard settings
+host = "127.0.0.1"
+port = 8000
+enable_cors = true
+read_only = true
+max_results = 1000
+
+# Authentication (if needed)
+enable_auth = false
+auth_method = "none"
+
+[storage]
+# Data storage settings
+findings_directory = "~/.cosmo/redteam/findings"
+runs_directory = "~/.cosmo/redteam/runs"
+packs_directory = "~/.cosmo/redteam/packs"
+reports_directory = "~/.cosmo/redteam/reports"
+
+# Database settings (if using database)
+use_database = false
+database_url = "sqlite:///redteam.db"
+
+[logging]
+# Logging configuration
+level = "INFO"
+format = "structured"
+output_file = "~/.cosmo/redteam/logs/redteam.log"
+max_file_size = "10MB"
+backup_count = 5
+
+# Log specific components
+log_attacks = true
+log_classifications = true
+log_redactions = true
+log_exports = true
+
+[safety]
+# Safety and compliance settings
+enable_safety_checks = true
+max_severity_level = 4  # 0-5 scale
+require_analyst_review = false
+enable_auto_blocking = false
+
+# Compliance and auditing
+audit_trail = true
+compliance_tags = ["demo", "research", "safety"]
+data_retention_days = 365
+
+[performance]
+# Performance optimization settings
+enable_caching = true
+cache_ttl = 3600
+max_workers = 4
+batch_size = 10
+
+# Memory management
+max_memory_usage = "2GB"
+enable_garbage_collection = true 

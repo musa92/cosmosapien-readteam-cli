@@ -18,6 +18,7 @@ Cosmosapien CLI provides a single interface to interact with various LLM provide
 - **Local Model Support**: Integration with Ollama, LM Studio, and vLLM
 - **Secure Authentication**: API keys stored securely using system keyring
 - **Professional CLI**: Clean, emoji-free interface built with Typer and Rich
+- **Red-Teaming Toolkit**: Comprehensive LLM safety evaluation and vulnerability detection
 
 ### Advanced Features
 - **Plugin System**: Extensible architecture for custom providers and tools
@@ -29,6 +30,11 @@ Cosmosapien CLI provides a single interface to interact with various LLM provide
 - **Token Analytics**: Detailed token usage statistics and distribution analysis
 - **Load Balancing**: Distribute workloads across available models efficiently
 - **Fallback Mechanisms**: Automatic failover to alternative models on errors
+- **Vulnerability Classification**: AI-powered harm category detection and severity scoring
+- **Response Redaction**: Safe content filtering for human consumption
+- **Novelty Detection**: TF-IDF and n-gram similarity for finding deduplication
+- **Attack Orchestration**: Sequential, parallel, and chain attack modes
+- **Expert Reporting**: HTML, Markdown, PDF, and Kaggle-ready export formats
 
 ## Screenshots
 
@@ -195,6 +201,31 @@ cosmo register-template gpt4
 cosmo register-quick myprovider mymodel --tier premium
 ```
 
+### Red-Teaming Quick Start
+
+```bash
+# Run a demonstration red-teaming session
+cosmo redteam demo
+
+# List available scenario packs
+cosmo redteam packs list
+
+# Run attacks against target models
+cosmo redteam run policy_edges --models llama:llama3.2:3b
+
+# Show attack findings and statistics
+cosmo redteam findings
+
+# Export results for analysis
+cosmo redteam export <run-id> --format kaggle
+
+# Generate expert analysis reports
+cosmo redteam analyze <run-id> --format html
+
+# Launch interactive dashboard
+cosmo redteam dashboard
+```
+
 ## Multi-Model Orchestration
 
 Cosmosapien CLI supports advanced workflows where multiple models can collaborate or solve complex tasks in steps. Use the following commands for multi-model, multi-step orchestration:
@@ -294,6 +325,18 @@ cosmo status                    # Show authentication status
 cosmo ask <prompt>              # Single question to any model
 cosmo chat                      # Interactive chat session
 cosmo debate <topic>            # Multi-model debate
+```
+
+### Red-Teaming
+```bash
+cosmo redteam demo              # Run demonstration session
+cosmo redteam run <pack>        # Execute attack scenarios
+cosmo redteam packs list        # List scenario packs
+cosmo redteam findings          # Show vulnerability findings
+cosmo redteam export <run-id>   # Export results
+cosmo redteam analyze <run-id>  # Generate analysis reports
+cosmo redteam dashboard         # Launch interactive dashboard
+cosmo redteam config            # Show configuration
 ```
 
 ### Model Management

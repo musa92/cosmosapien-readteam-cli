@@ -1,0 +1,5 @@
+[console_scripts]
+cosmo = cosmosapien.cli.main:app
+
+[gui_scripts]
+cosmosapien-gui = cosmosapien.gui.main:main
