@@ -1,40 +1,44 @@
-# Cosmosapien CLI
+# Cosmosapien Red-Teaming CLI
 
-A modular, extensible command-line interface for interacting with multiple Large Language Model (LLM) providers through a unified API. Built with Python, featuring smart routing, model library management, and multi-agent capabilities.
+A comprehensive red-teaming toolkit for evaluating Large Language Model (LLM) safety and identifying potential vulnerabilities. Built with Python, featuring attack orchestration, vulnerability classification, novelty detection, and expert reporting capabilities.
 
 ## Overview
 
-Cosmosapien CLI provides a single interface to interact with various LLM providers including OpenAI, Google Gemini, Claude (Anthropic), Perplexity, and local models via Ollama. It features intelligent prompt routing, comprehensive model management, and support for multi-agent interactions.
+Cosmosapien Red-Teaming CLI is a specialized toolkit designed for LLM safety evaluation, aligned with the Kaggle "OpenAI gpt-oss-20b Red-Teaming" competition. It provides comprehensive red-teaming capabilities including attack orchestration, vulnerability detection, response analysis, and expert reporting across multiple LLM providers including OpenAI, Google Gemini, Claude (Anthropic), Perplexity, and local models via Ollama.
 
 ## Key Features
 
-### Core Capabilities
+### Red-Teaming Capabilities
+- **Attack Orchestration**: Sequential, parallel, and chain attack modes with configurable pressure
+- **Vulnerability Classification**: AI-powered harm category detection (violence, financial crime, hate/disinfo, sexual, system override)
+- **Severity Scoring**: 0-5 scale severity assessment with confidence scoring
+- **Novelty Detection**: TF-IDF and n-gram similarity for finding deduplication and novelty scoring
+- **Response Redaction**: Safe content filtering for human consumption while preserving raw data
+- **Scenario Pack Management**: Install, manage, and execute custom attack scenarios
+- **Expert Reporting**: HTML, Markdown, PDF, CSV, Parquet, and Kaggle-ready JSON exports
+- **Interactive Dashboard**: FastAPI-based web interface for browsing findings and run summaries
+
+### Core Infrastructure
 - **Multi-Provider Support**: OpenAI, Google Gemini, Claude, Perplexity, LLaMA (Ollama)
 - **Smart Routing**: Automatic model selection based on prompt complexity and cost optimization
-- **Auto-Distribution**: Intelligent task distribution across multiple models with load balancing
-- **Free Tier Optimization**: Maximize usage of free tiers and local models with `squeeze`
 - **Model Library**: Centralized model management with metadata and capabilities tracking
-- **Multi-Agent System**: Run debates and conversations between multiple AI models
-- **Local Model Support**: Integration with Ollama, LM Studio, and vLLM
+- **Local Model Support**: Integration with Ollama, LM Studio, and vLLM including gpt-oss-20b
 - **Secure Authentication**: API keys stored securely using system keyring
 - **Professional CLI**: Clean, emoji-free interface built with Typer and Rich
-- **Red-Teaming Toolkit**: Comprehensive LLM safety evaluation and vulnerability detection
 
 ### Advanced Features
 - **Plugin System**: Extensible architecture for custom providers and tools
 - **Memory Management**: Conversation history and session persistence
-- **Configuration Management**: TOML-based configuration with `.cosmosrc`
+- **Configuration Management**: TOML-based configuration with `redteam.toml`
 - **Usage Tracking**: Monitor API usage and costs across providers
 - **Model Registration**: Easy model addition through interactive wizards and templates
 - **Performance Monitoring**: Track model performance, response times, and success rates
 - **Token Analytics**: Detailed token usage statistics and distribution analysis
 - **Load Balancing**: Distribute workloads across available models efficiently
 - **Fallback Mechanisms**: Automatic failover to alternative models on errors
-- **Vulnerability Classification**: AI-powered harm category detection and severity scoring
-- **Response Redaction**: Safe content filtering for human consumption
-- **Novelty Detection**: TF-IDF and n-gram similarity for finding deduplication
-- **Attack Orchestration**: Sequential, parallel, and chain attack modes
-- **Expert Reporting**: HTML, Markdown, PDF, and Kaggle-ready export formats
+- **Multi-Agent System**: Run debates and conversations between multiple AI models
+- **Auto-Distribution**: Intelligent task distribution across multiple models with load balancing
+- **Free Tier Optimization**: Maximize usage of free tiers and local models with `squeeze`
 
 ## Screenshots
 
