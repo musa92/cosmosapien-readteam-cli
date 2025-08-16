@@ -1,0 +1,5 @@
+models:
+  - type: local_rules
+  - type: openai
+    name: gpt-4  # or your house default
+ensemble: risk_max
