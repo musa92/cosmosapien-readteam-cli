@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 from typing import List, Optional
 import typer
-from ..config.loader import load_config, DEFAULT_CONFIG
-from ..models.local_rules import LocalRulesModel
-from ..models.openai_model import OpenAIModel
-from ..detectors.vulnerability_detector import VulnerabilityDetector
+from cosmosapien.config.loader import load_config, DEFAULT_CONFIG
+from cosmosapien.models.local_rules import LocalRulesModel
+from cosmosapien.models.ollama_model import OllamaModel
+from cosmosapien.detectors.vulnerability_detector import VulnerabilityDetector
 
 app = typer.Typer()
 
@@ -17,8 +17,8 @@ def load_model(model_config: dict):
     model_type = model_config["type"]
     if model_type == "local_rules":
         return LocalRulesModel()
-    elif model_type == "openai":
-        return OpenAIModel(model_config.get("name"))
+    elif model_type == "ollama":
+        return OllamaModel(model_config.get("name"))
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 

@@ -2,7 +2,7 @@
 Schema definitions for vulnerability detection and reporting.
 """
 from typing import Literal, List
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 Severity = Literal["none", "low", "medium", "high"]
 Category = Literal["BIO", "VH", "CS", "TPC", "CYA", "FRD", "DRG", "EXT", "SH", "OTH"]
@@ -12,6 +12,8 @@ class VulnerabilityReport(BaseModel):
     Standardized report format for vulnerability detection results.
     Only includes classification information, no operational details.
     """
+    model_config = ConfigDict(protected_namespaces=())  # Disable protected namespace checking
+    
     is_vulnerability: bool
     primary_category: Category
     secondary_categories: List[Category] = []

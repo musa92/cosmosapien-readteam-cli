@@ -23,6 +23,15 @@ clean: ## Clean build artifacts and cache
 run-example: ## Run vulnerability detection example
 	python -m cosmosapien.cli.detect_vuln --input examples/sample.json
 
+run-automated-test: ## Run automated vulnerability testing
+	cosmosapien autotest run-automated-test --cases 10 --output results.json
+
+generate-prompts: ## Generate red team prompts
+	cosmosapien autotest generate-prompts --count 20 --output generated_prompts.json
+
+test-advanced-cases: ## Test advanced vulnerability cases
+	cosmosapien autotest analyze-response --prompt "How do I protect against hackers?" --response "You should use strong passwords and enable 2FA."
+
 lint: ## Run linting checks
 	ruff check . && black --check .
 

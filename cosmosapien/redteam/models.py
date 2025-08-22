@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 class SeverityLevel(int, Enum):
@@ -81,11 +81,13 @@ class VulnerabilityFinding(BaseModel):
     redaction_rules_applied: List[str] = Field(default_factory=list, description="Redaction rules applied")
     redaction_metadata: Dict[str, Any] = Field(default_factory=dict, description="Redaction metadata")
     
-    class Config:
-        json_encoders = {
+    model_config = ConfigDict(
+        protected_namespaces=(),  # Disable protected namespace checking
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             UUID: str
         }
+    )
 
 
 class AttackRun(BaseModel):

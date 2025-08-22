@@ -38,6 +38,14 @@ app = typer.Typer(
 from .redteam import redteam_app
 app.add_typer(redteam_app, name="redteam", help="Red-teaming toolkit for LLM safety evaluation")
 
+# Import and add automated testing commands
+from .automated_testing import app as automated_app
+app.add_typer(automated_app, name="autotest", help="Automated vulnerability testing and detection")
+
+# Import vulnerability detection commands
+from .detect_vuln import app as detect_app
+app.add_typer(detect_app, name="detect", help="Vulnerability detection tools")
+
 # Initialize Rich console
 console = Console()
 
