@@ -35,8 +35,26 @@ app = typer.Typer(
 )
 
 # Import and add redteam commands
+from .simple_redteam import app as simple_redteam_app
+app.add_typer(simple_redteam_app, name="redteam", help="Simple Red Teaming - Test AI safety with ease")
+
+# Advanced commands (for power users)
 from .redteam import redteam_app
-app.add_typer(redteam_app, name="redteam", help="Red-teaming toolkit for LLM safety evaluation")
+app.add_typer(redteam_app, name="advanced", help="Advanced red-teaming toolkit")
+
+from .automated_testing import app as automated_app  
+app.add_typer(automated_app, name="auto", help="Automated testing (advanced)")
+
+from .detect_vuln import app as detect_app
+app.add_typer(detect_app, name="detect", help="Vulnerability detection (advanced)")
+
+# Findings generation and reporting
+from .findings_generator import app as findings_app
+app.add_typer(findings_app, name="findings", help="Generate standardized vulnerability findings reports")
+
+# GPT-OSS red teaming challenge
+from .gptoss_findings import app as gptoss_app
+app.add_typer(gptoss_app, name="gptoss", help="Generate GPT-OSS red teaming challenge findings")
 
 # Initialize Rich console
 console = Console()

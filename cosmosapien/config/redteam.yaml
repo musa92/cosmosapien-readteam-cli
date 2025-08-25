@@ -1,0 +1,3 @@
+models:
+  - type: local_rules
+ensemble: risk_max

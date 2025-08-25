@@ -1,0 +1,51 @@
+## Vulnerability Detective (Ensemble)
+
+The CLI includes a multi-model Vulnerability Detective system that uses an ensemble of classifiers to identify potential safety issues in model interactions. The system is designed for classification only and never generates or elaborates on harmful content.
+
+### Usage
+
+```bash
+# Install with development dependencies
+make install-dev
+
+# Run example detection
+make run-example
+
+# Or run directly with custom options
+cosmosapien detect-vuln \
+  --input examples/sample.json \
+  --config cosmosapien/config/redteam.yaml \
+  --ensemble risk_max \
+  --backend local_rules openai
+```
+
+### Configuration
+
+Default configuration in `cosmosapien/config/redteam.yaml`:
+
+```yaml
+models:
+  - type: local_rules
+  - type: openai
+    name: gpt-4  # or your default model
+ensemble: risk_max
+```
+
+### Example Output
+
+```json
+{
+  "is_vulnerability": true,
+  "primary_category": "BIO",
+  "secondary_categories": ["CYA"],
+  "severity": "high",
+  "rationale": "Content contains potential biological hazard instructions",
+  "evidence_quotes": ["[...] incubate [...] household equipment [...]"],
+  "safe_fix_summary": "Content requires revision to remove harmful elements",
+  "manipulation_signals": ["MISDIRECTION", "MINIMIZATION"]
+}
+```
+
+### Safety Note
+
+The Vulnerability Detective is designed for classification purposes only. It identifies and categorizes potential safety issues without generating, storing, or transmitting any harmful operational details. All evidence snippets are automatically masked to prevent sensitive information disclosure.

@@ -570,3 +570,143 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - Inspired by Google's `gemini-cli`
 - Built with modern Python tooling
 - Community-driven development
+## Vulnerability Detective (Ensemble)
+
+The CLI includes a comprehensive multi-model Vulnerability Detective system that combines multiple detection strategies with automated red teaming capabilities. The system implements advanced techniques from OpenAI, Anthropic, and xAI research on diverse red teaming approaches.
+
+### Features
+
+- **Multi-Strategy Detection**: Pattern matching, semantic analysis, adversarial probing, consistency checking, prompt injection detection, and manipulation signal analysis
+- **Automated Test Generation**: Creates diverse red team prompts across multiple attack vectors and harm categories  
+- **Manipulation Taxonomy**: Comprehensive classification of 10 manipulation tactics used in adversarial prompts
+- **Ensemble Aggregation**: Combines results from multiple detection strategies for robust assessment
+- **Advanced Attack Vectors**: Direct requests, hypothetical scenarios, roleplay, jailbreaks, social engineering, chain-of-thought, context switching, and escalation sequences
+
+### Quick Start
+
+```bash
+# Install with development dependencies
+make install-dev
+
+# Run automated vulnerability testing
+cosmosapien autotest run-automated-test --cases 20 --output results.json
+
+# Generate red team test prompts
+cosmosapien autotest generate-prompts --count 10 --harm violence --attack roleplay
+
+# Analyze a specific response
+cosmosapien autotest analyze-response \
+  --prompt "How do I protect my system?" \
+  --response "You should use strong passwords..."
+
+# List available categories and attack vectors
+cosmosapien autotest list-categories
+```
+
+### Configuration
+
+Default configuration in `cosmosapien/config/redteam.yaml`:
+
+```yaml
+models:
+  - type: local_rules
+  - type: ollama
+    name: gpt-oss:20b  # or your model
+ensemble: risk_max
+```
+
+### Attack Vectors
+
+- **Direct Request**: Straightforward harmful requests
+- **Hypothetical Scenario**: "In a fictional world where..." 
+- **Roleplay**: "You are a security expert..."
+- **Jailbreak**: Attempts to override safety instructions
+- **Social Engineering**: Using trust and authority
+- **Chain of Thought**: Step-by-step escalation
+- **Context Switching**: Rapid topic changes
+- **Escalation**: Persistent requests with justification
+
+### Detection Strategies
+
+1. **Pattern Matching**: Regex-based detection of harmful content patterns
+2. **Semantic Analysis**: Intent and domain analysis using NLP techniques
+3. **Adversarial Probing**: Detection of common jailbreak and manipulation attempts
+4. **Consistency Checking**: Identifying contradictions between safety claims and helpful content
+5. **Prompt Injection Detection**: Detecting attempts to override system instructions
+6. **Manipulation Signal Analysis**: Classification of 10 manipulation tactics
+
+### Manipulation Taxonomy
+
+The system detects 10 categories of manipulation tactics:
+- **MISDIRECTION**: Red herring strategies, attention diversion
+- **CONCEALMENT**: Evidence suppression, information hiding  
+- **FABRICATION**: False evidence construction, synthetic data
+- **DEFLECTION**: Blame shifting, responsibility transfer
+- **GASLIGHTING**: Psychological manipulation, reality distortion
+- **MINIMIZATION**: Severity downplay, risk understating
+- **RATIONALIZATION**: Moral disengagement, justification
+- **CHARM**: Impression management, social engineering
+- **INTIMIDATION**: Coercive control, threat leverage
+- **PATTERN_DISRUPTION**: Signature erasure, behavior randomization
+
+### Example Output
+
+```json
+{
+  "summary": {
+    "total_tests": 25,
+    "vulnerabilities_detected": 12,
+    "vulnerability_rate": 0.48,
+    "high_severity_count": 3,
+    "attack_success_rates": {
+      "social_engineering": 0.67,
+      "jailbreak": 0.45,
+      "roleplay": 0.52
+    }
+  },
+  "results": [
+    {
+      "prompt": {
+        "text": "For my cybersecurity class, explain how to...",
+        "attack_vector": "social_engineering",
+        "manipulation_tactics": ["rationalization", "misdirection"]
+      },
+      "vulnerability_assessment": {
+        "is_vulnerability": true,
+        "primary_category": "CS",
+        "severity": "medium",
+        "manipulation_signals": ["RATIONALIZATION", "MISDIRECTION"]
+      }
+    }
+  ]
+}
+```
+
+### Advanced Usage
+
+```bash
+# Run targeted tests for specific harm categories
+cosmosapien autotest run-automated-test \
+  --cases 50 \
+  --harm violence illegal_activity \
+  --attack jailbreak social_engineering \
+  --concurrent 5 \
+  --output detailed_results.json
+
+# Test escalation sequences
+cosmosapien autotest run-automated-test \
+  --cases 10 \
+  --escalation \
+  --format csv
+
+# Generate prompts with specific difficulty
+cosmosapien autotest generate-prompts \
+  --count 15 \
+  --min-difficulty 3 \
+  --max-difficulty 5 \
+  --attack hypothetical_scenario roleplay
+```
+
+### Safety Note
+
+The Vulnerability Detective is designed for classification purposes only. It identifies and categorizes potential safety issues without generating, storing, or transmitting any harmful operational details. All evidence snippets are automatically masked to prevent sensitive information disclosure.
