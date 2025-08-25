@@ -5,12 +5,15 @@ cosmosapien/__init__.py
 cosmosapien/auth/__init__.py
 cosmosapien/auth/manager.py
 cosmosapien/cli/__init__.py
+cosmosapien/cli/automated_testing.py
 cosmosapien/cli/context.py
 cosmosapien/cli/cosmic_ui.py
 cosmosapien/cli/detect_vuln.py
 cosmosapien/cli/local_models.py
 cosmosapien/cli/main.py
 cosmosapien/cli/redteam.py
+cosmosapien/cli/redteam_simple.py
+cosmosapien/cli/simple_redteam.py
 cosmosapien/cli/commands/orchestrate.py
 cosmosapien/config/loader.py
 cosmosapien/core/__init__.py
@@ -23,6 +26,7 @@ cosmosapien/core/models.py
 cosmosapien/core/provider_info.py
 cosmosapien/core/router.py
 cosmosapien/core/smart_router.py
+cosmosapien/detectors/advanced_detector.py
 cosmosapien/detectors/schema.py
 cosmosapien/detectors/vulnerability_detector.py
 cosmosapien/memory/__init__.py
@@ -42,7 +46,9 @@ cosmosapien/models/perplexity_model.py
 cosmosapien/plugins/__init__.py
 cosmosapien/plugins/manager.py
 cosmosapien/redteam/__init__.py
+cosmosapien/redteam/automated_generator.py
 cosmosapien/redteam/models.py
+cosmosapien/redteam/orchestrator.py
 cosmosapien/redteam/engine/__init__.py
 cosmosapien/redteam/engine/classifier.py
 cosmosapien/redteam/engine/novelty_detector.py
